@@ -7,14 +7,6 @@ The vignettes span a wide range of medical domains, from maternal and child heal
 
 This dataset is small—only 400 training and 100 test samples—but that’s because collecting high-quality, expert-labelled medical data is hard. These are real-world cases, and every entry reflects the constraints and pressures faced by healthcare workers in underserved regions. In resource-limited settings, clinical decisions must be fast, accurate, and sensitive to both patient condition and system limitations. Your solution should aim to reflect that balance.
 
-About PATH
-
-PATH is an international NGO dedicated to health innovation to close the global health equity gap. PATH Living Labs (LL) Initiative is a global team of 44 human-centered design specialists dedicated to co-creating solutions with users to rapidly design, test, and scale products to their long-standing challenges. The Living Labs team, in collaboration with Moi University created the dataset for this challenge as part of a project investment focused on evaluating generative AI tools in healthcare settings, which you can read more about it here: https://www.path.org/who-we-are/programs/digital-health/large-language-models-for-health-equity/
-
-About the Global AI Summit on Africa
-
-The Centre for the Fourth Industrial Revolution and the Ministry of ICT & Innovation, in collaboration with the World Economic Forum, will host the inaugural Global AI Summit on Africa in Kigali, Rwanda under the theme: “AI and Africa’s Demographic Dividend: Reimagining Economic Opportunities for Africa’s Workforce.” This premier event will gather world leaders, government ministers, CEOs, civil society, start-ups, investors, and international organizations to shape Africa's role in the global AI economy.
-
 Evaluation
 The evaluation metric for this challenge is the ROUGE Score.
 

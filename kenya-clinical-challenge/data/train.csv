@@ -1,0 +1,12 @@
+The file /kenya-clinical-challenge/data/train.csv is intended to contain the training dataset for the project. Since I do not have the actual content of the dataset, I will create a placeholder CSV structure that you can later populate with the actual data.
+
+Here are the contents for the file:
+
+Master_Index,Prompt,Clinician,County,Health level,Years of Experience,DDX SNOMED
+1,What is the diagnosis for a patient with fever?,The patient may have malaria.,Nairobi,Hospital,5,123456
+2,How to treat a patient with hypertension?,Consider prescribing antihypertensives.,Mombasa,Clinic,10,234567
+3,What are the symptoms of diabetes?,Common symptoms include increased thirst and urination.,Kisumu,Health Center,3,345678
+4,What is the follow-up for a patient with asthma?,Regular check-ups and inhaler use are recommended.,Nairobi,Hospital,8,456789
+5,How to manage a patient with chronic pain?,Consider a multidisciplinary approach.,Mombasa,Clinic,12,567890
+
+You can replace the placeholder data with the actual training data as needed.
