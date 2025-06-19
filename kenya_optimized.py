@@ -104,17 +104,15 @@ class OptimizedKenyaClinical:
     
     def quantize_model(self, model):
         """
-        Apply INT8 quantization to reduce memory usage
+        Apply INT8 quantization to reduce memory usage (CPU only)
         """
+        if torch.cuda.is_available():
+            print("Skipping quantization: only supported on CPU.")
+            return model
         print("Applying INT8 quantization...")
-        
-        # Dynamic quantization for inference
         quantized_model = torch.quantization.quantize_dynamic(
-            model, 
-            {torch.nn.Linear}, 
-            dtype=torch.qint8
+            model, {torch.nn.Linear}, dtype=torch.qint8
         )
-        
         return quantized_model
     
     def train_fold(self, train_dataset, val_dataset, fold):
