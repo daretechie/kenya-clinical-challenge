@@ -85,7 +85,7 @@ class OptimizedKenyaClinical:
         if is_train:
             target_texts = df['Clinician'].tolist()
             data["target_text"] = target_texts
-            print("Empty targets:", [t for t in target_texts if not t.strip()])
+            # print("Empty targets:", [t for t in target_texts if not t.strip()])
         dataset = Dataset.from_dict(data)
 
         def tokenize_function(examples):
@@ -102,18 +102,17 @@ class OptimizedKenyaClinical:
                     [(token if token != self.tokenizer.pad_token_id else -100) for token in label_seq]
                     for label_seq in labels
                 ]
-                # Convert to torch.LongTensor
-                model_inputs["labels"] = [torch.tensor(label_seq, dtype=torch.long) for label_seq in labels]
-            if is_train:
-                print("Sample labels:", model_inputs["labels"][:3])
-                print("Count of non-masked tokens in first label:", sum([x != -100 for x in model_inputs["labels"][0]]))
+                model_inputs["labels"] = labels
+                # print("Sample labels:", model_inputs["labels"][:3])
+                # print("Count of non-masked tokens in first label:", sum([x != -100 for x in model_inputs["labels"][0]]))
             return model_inputs
 
         tokenized = dataset.map(tokenize_function, batched=True, batch_size=32, remove_columns=dataset.column_names)
-        print(tokenized[0])
+        # print(tokenized[0])
         if is_train:
             print("Sample input:", dataset[0]["input_text"])
             print("Sample target:", dataset[0]["target_text"])
+            print("Sample label:", tokenized[0]["labels"])
         return tokenized
     
     def quantize_model(self, model):
