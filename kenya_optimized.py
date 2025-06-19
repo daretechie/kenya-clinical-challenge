@@ -295,7 +295,7 @@ def main():
     oof_predictions, test_predictions = model.train_and_predict(train_df, test_df)
     
     # Evaluate OOF performance
-    oof_references = [model.normalize_text(x) for x in train_df["Clinician"].tolist()]
+    oof_references = train_df["Clinician"].tolist()
     oof_score = model.evaluate_performance(oof_predictions, oof_references)
     print(f"OOF ROUGE-L Score: {oof_score:.4f}")
     
