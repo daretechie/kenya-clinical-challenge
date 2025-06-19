@@ -1,6 +1,6 @@
 """
-Kenya Clinical Challenge - Optimized Solution
-============================================
+Kenya Clinical Challenge - Optimized Solution (Fixed)
+=====================================================
 
 Competition Constraints:
 - <2GB RAM usage
@@ -61,59 +61,90 @@ class OptimizedKenyaClinical:
     
     def __init__(self, 
                  model_name: str = 'google/flan-t5-small',
-                 max_length: int = 128,  # Reduced for less padding and better learning
-                 batch_size: int = 16,
-                 num_epochs: int = 10,    # Reduce epochs to help generalization
-                 learning_rate: float = 1e-4, # Lower LR
-                 num_beams: int = 2,
-                 early_stopping_patience: int = 3,
+                 # === FIX 1: Increased max lengths for less truncation ===
+                 max_input_length: int = 512,
+                 max_target_length: int = 256,
+                 batch_size: int = 8, # Reduced batch size to accommodate longer sequences
+                 # === FIX 2: More stable hyperparameters ===
+                 num_epochs: int = 5,    
+                 learning_rate: float = 5e-5,
+                 weight_decay: float = 0.01,
+                 num_beams: int = 3, # Increased beams for potentially better generation
+                 early_stopping_patience: int = 2,
                  n_splits: int = 3):
         self.model_name = model_name
-        self.max_length = max_length
+        # Store separate lengths for input and target
+        self.max_input_length = max_input_length
+        self.max_target_length = max_target_length
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.num_beams = num_beams
         self.early_stopping_patience = early_stopping_patience
         self.n_splits = n_splits
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         self.memory_usage = []
 
+    # === FIX 3: Corrected preprocessing pipeline ===
     def preprocess_data(self, df: pd.DataFrame, is_train=True) -> Dataset:
+        """
+        Tokenizes data without padding. Padding will be handled dynamically 
+        by the DataCollatorForSeq2Seq.
+        """
         input_texts = df['Prompt'].tolist()
         data = {"input_text": input_texts}
         if is_train:
             target_texts = df['Clinician'].tolist()
             data["target_text"] = target_texts
-            # print("Empty targets:", [t for t in target_texts if not t.strip()])
+
         dataset = Dataset.from_dict(data)
 
         def tokenize_function(examples):
+            # Tokenize inputs, only truncating
             model_inputs = self.tokenizer(
-                examples["input_text"], max_length=self.max_length, truncation=True,
-                padding="longest"
+                examples["input_text"], 
+                max_length=self.max_input_length, 
+                truncation=True
             )
+            
             if is_train:
+                # Tokenize targets, only truncating. Labels are created automatically by the trainer.
                 labels = self.tokenizer(
-                    text_target=examples["target_text"], max_length=self.max_length, truncation=True,
-                    padding="max_length"
-                )["input_ids"]
-                labels = [
-                    [(token if token != self.tokenizer.pad_token_id else -100) for token in label_seq]
-                    for label_seq in labels
-                ]
-                model_inputs["labels"] = labels
-                # print("Sample labels:", model_inputs["labels"][:3])
-                # print("Count of non-masked tokens in first label:", sum([x != -100 for x in model_inputs["labels"][0]]))
+                    text_target=examples["target_text"], 
+                    max_length=self.max_target_length, 
+                    truncation=True
+                )
+                model_inputs["labels"] = labels["input_ids"]
+
             return model_inputs
 
-        tokenized = dataset.map(tokenize_function, batched=True, batch_size=32, remove_columns=dataset.column_names)
-        # print(tokenized[0])
-        if is_train:
-            print("Sample input:", dataset[0]["input_text"])
-            print("Sample target:", dataset[0]["target_text"])
-            print("Sample label:", tokenized[0]["labels"])
+        tokenized = dataset.map(
+            tokenize_function, 
+            batched=True, 
+            remove_columns=dataset.column_names
+        )
         return tokenized
+    
+    # === FIX 4: Added compute_metrics function for ROUGE evaluation during training ===
+    def compute_metrics(self, eval_preds):
+        preds, labels = eval_preds
+        if isinstance(preds, tuple):
+            preds = preds[0]
+        
+        # Replace -100 (token used for padding) to the actual pad token ID
+        preds = np.where(preds != -100, preds, self.tokenizer.pad_token_id)
+        decoded_preds = self.tokenizer.batch_decode(preds, skip_special_tokens=True)
+        
+        labels = np.where(labels != -100, labels, self.tokenizer.pad_token_id)
+        decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
+        
+        # Simple ROUGE-L scoring
+        scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
+        scores = [scorer.score(ref, pred)['rougeL'].fmeasure for ref, pred in zip(decoded_labels, decoded_preds)]
+        
+        result = {"rougeL": np.mean(scores)}
+        return result
     
     def quantize_model(self, model):
         """
@@ -134,50 +165,84 @@ class OptimizedKenyaClinical:
         if torch.cuda.is_available():
             model.cuda()
 
+        # === FIX 5: Updated Training Arguments for stability and better evaluation ===
         training_args = Seq2SeqTrainingArguments(
             output_dir=f"./results_fold{fold}",
-            eval_strategy="steps", eval_steps=50,
-            save_strategy="steps", save_steps=50,
+            eval_strategy="epoch",      # Evaluate at the end of each epoch
+            save_strategy="epoch",      # Save at the end of each epoch
             per_device_train_batch_size=self.batch_size,
             per_device_eval_batch_size=self.batch_size * 2,
             num_train_epochs=self.num_epochs,
             learning_rate=self.learning_rate,
+            weight_decay=self.weight_decay,
             predict_with_generate=True,
             fp16=torch.cuda.is_available(),
-            logging_steps=25, load_best_model_at_end=True,
-            metric_for_best_model="eval_loss", greater_is_better=False,
-            save_total_limit=1, seed=42 + fold, report_to="none",
-            dataloader_pin_memory=False, remove_unused_columns=False
+            logging_steps=25,
+            load_best_model_at_end=True,
+            metric_for_best_model="rougeL", # Use ROUGE score to find the best model
+            greater_is_better=True,
+            save_total_limit=1,
+            seed=42 + fold,
+            report_to="none",
+            generation_max_length=self.max_target_length, # Ensure generation length is consistent
+            generation_num_beams=self.num_beams,
+        )
+        
+        # === FIX 6: Simplified Data Collator ===
+        # Let the collator handle padding dynamically. It will also create decoder_input_ids
+        # and replace padding in labels with -100 automatically.
+        data_collator = DataCollatorForSeq2Seq(
+            self.tokenizer, 
+            model=model
         )
 
-        data_collator = DataCollatorForSeq2Seq(self.tokenizer, model=model, padding=True, max_length=self.max_length)
         trainer = Seq2SeqTrainer(
-            model=model, args=training_args, train_dataset=train_dataset,
-            eval_dataset=val_dataset, data_collator=data_collator,
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
+            data_collator=data_collator,
             tokenizer=self.tokenizer,
+            compute_metrics=self.compute_metrics, # Add the metrics function
             callbacks=[EarlyStoppingCallback(early_stopping_patience=self.early_stopping_patience)]
         )
 
         trainer.train()
-        model = self.quantize_model(model)
+        
+        # Note: Quantization is CPU-only. This line won't affect the GPU model used for prediction below.
+        # It's here for a potential final CPU deployment step.
+        # quantized_model = self.quantize_model(trainer.model)
 
-        predictions = self.generate_predictions(model, val_dataset, "validation")
+        # Use the best model saved by the trainer for predictions
+        best_model = trainer.model 
+        predictions = self.generate_predictions(best_model, val_dataset, "validation")
 
-        del trainer; gc.collect(); torch.cuda.empty_cache()
-        return model, predictions
+        del trainer, model; gc.collect(); torch.cuda.empty_cache()
+        return best_model, predictions
     
     def generate_predictions(self, model, dataset, split_name) -> List[str]:
         print(f"Generating predictions for {split_name}...")
         model.eval()
         predictions = []
-        batch_size = 16
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, collate_fn=default_data_collator)
+        batch_size = self.batch_size * 2 # Use eval batch size
+        
+        # The dataset is unpadded, so we need a collator for the dataloader
+        data_collator = DataCollatorForSeq2Seq(self.tokenizer, model=model)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, collate_fn=data_collator)
+
         with torch.no_grad():
             for batch in tqdm(dataloader, desc=f"Generating {split_name}"):
-                inputs = {k: v.to(model.device) for k, v in batch.items() if k in ["input_ids", "attention_mask"]}
+                # The collator already prepares the batch for the correct device if a GPU is available
+                # so we can simplify this part.
+                if torch.cuda.is_available():
+                    batch = {k: v.to('cuda') for k, v in batch.items()}
+                
                 outputs = model.generate(
-                    **inputs, max_length=self.max_length, num_beams=self.num_beams,
-                    early_stopping=True, do_sample=False,
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask'],
+                    max_length=self.max_target_length,
+                    num_beams=self.num_beams,
+                    early_stopping=True,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id
                 )
@@ -185,6 +250,7 @@ class OptimizedKenyaClinical:
                 predictions.extend(decoded)
         return predictions
 
+    # ... (Rest of the class methods like ensemble_predictions, evaluate_performance, etc. can remain the same) ...
     def ensemble_predictions(self, predictions_list: List[List[str]]) -> List[str]:
         return [Counter(preds).most_common(1)[0][0] for preds in zip(*predictions_list)]
 
@@ -202,6 +268,8 @@ class OptimizedKenyaClinical:
         for fold, (train_idx, val_idx) in enumerate(kf.split(train_df)):
             set_seed(42 + fold)
             train_data, val_data = train_df.iloc[train_idx], train_df.iloc[val_idx]
+            
+            # Preprocess data for the current fold
             train_dataset = self.preprocess_data(train_data)
             val_dataset = self.preprocess_data(val_data)
 
@@ -217,6 +285,7 @@ class OptimizedKenyaClinical:
         final_test_predictions = self.ensemble_predictions(test_predictions_folds)
         return oof_predictions.tolist(), final_test_predictions
     
+    # ... (benchmark_inference can remain the same) ...
     def benchmark_inference(self, model, test_dataset, num_samples: int = 10) -> Dict[str, float]:
         """
         Benchmark inference performance
@@ -239,28 +308,20 @@ class OptimizedKenyaClinical:
                 
                 # Get single sample
                 sample = test_dataset[idx]
-                input_ids = sample["input_ids"]
-                input_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-                
-                # Tokenize
-                inputs = self.tokenizer(
-                    [input_text],
-                    return_tensors='pt',
-                    padding=True,
-                    truncation=True,
-                    max_length=self.max_length
-                )
+                input_ids = torch.tensor(sample["input_ids"]).unsqueeze(0) # create a batch of 1
+                attention_mask = torch.tensor(sample["attention_mask"]).unsqueeze(0)
                 
                 if torch.cuda.is_available():
-                    inputs = {k: v.cuda() for k, v in inputs.items()}
+                    input_ids = input_ids.cuda()
+                    attention_mask = attention_mask.cuda()
                 
                 # Generate
                 outputs = model.generate(
-                    **inputs,
-                    max_length=self.max_length,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_length=self.max_target_length,
                     num_beams=self.num_beams,
-                    early_stopping=True,
-                    do_sample=False
+                    early_stopping=True
                 )
                 
                 # Decode
@@ -286,30 +347,40 @@ def main():
     """
     Main execution function
     """
-    print("=== Kenya Clinical Challenge - Optimized Solution ===")
+    print("=== Kenya Clinical Challenge - Optimized Solution (Fixed) ===")
     
-    # Data paths
+    # Set seed for reproducibility
+    set_seed(42)
+
+    # Data paths - assuming data is in a 'data' subdirectory
+    if not os.path.exists('data'):
+        print("Error: 'data' directory not found. Please place train.csv and test.csv inside a 'data' folder.")
+        return
+
     TRAIN_CSV = 'data/train.csv'
     TEST_CSV = 'data/test.csv'
-    SUBMISSION_CSV = 'submission_optimized.csv'
+    SUBMISSION_CSV = 'submission_optimized_fixed.csv'
     
     # Load data
     print("Loading data...")
     train_df = pd.read_csv(TRAIN_CSV)
     test_df = pd.read_csv(TEST_CSV)
     
+    # Simple cleanup: remove rows with missing prompts or summaries
+    train_df.dropna(subset=['Prompt', 'Clinician'], inplace=True)
+
     print(f"Train shape: {train_df.shape}")
     print(f"Test shape: {test_df.shape}")
     
     # Initialize optimized model
-    model = OptimizedKenyaClinical()
+    model_handler = OptimizedKenyaClinical()
     
     # Train and predict
-    oof_predictions, test_predictions = model.train_and_predict(train_df, test_df)
+    oof_predictions, test_predictions = model_handler.train_and_predict(train_df, test_df)
     
     # Evaluate OOF performance
     oof_references = train_df["Clinician"].tolist()
-    oof_score = model.evaluate_performance(oof_predictions, oof_references)
+    oof_score = model_handler.evaluate_performance(oof_predictions, oof_references)
     print(f"OOF ROUGE-L Score: {oof_score:.4f}")
     
     # Create submission
@@ -332,4 +403,4 @@ def main():
     print("=== Optimization Complete ===")
 
 if __name__ == "__main__":
-    main() 
+    main()
