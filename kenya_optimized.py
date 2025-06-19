@@ -68,16 +68,16 @@ class EnhancedKenyaClinical:
     def __init__(self, 
                  model_name: str = 'google/flan-t5-small',
                  max_input_length: int = 512,
-                 max_target_length: int = 128,  # Reduced for efficiency
-                 batch_size: int = 16,  # Increased for better GPU utilization
+                 max_target_length: int = 100,  # Reduced for efficiency and speed
+                 batch_size: int = 8,  # Reduced to manage memory
                  num_epochs: int = 6,
-                 learning_rate: float = 3e-4,  # Higher LR for faster convergence
+                 learning_rate: float = 3e-4,
                  weight_decay: float = 0.01,
                  warmup_ratio: float = 0.1,
-                 num_beams: int = 4,
+                 num_beams: int = 2,  # Reduced for faster inference
                  early_stopping_patience: int = 2,
-                 n_splits: int = 5,  # More splits for better validation
-                 gradient_accumulation_steps: int = 2):
+                 n_splits: int = 5,
+                 gradient_accumulation_steps: int = 4): # Increased to maintain effective batch size
         
         self.model_name = model_name
         self.max_input_length = max_input_length
@@ -222,15 +222,13 @@ class EnhancedKenyaClinical:
         model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
         model.to(self.device)
         
-        # Calculate training steps for scheduler
-        num_training_steps = len(train_dataset) // (self.batch_size * self.gradient_accumulation_steps) * self.num_epochs
-        num_warmup_steps = int(num_training_steps * self.warmup_ratio)
+        # The Trainer will handle scheduler creation based on args
         
         # Enhanced training arguments
         training_args = Seq2SeqTrainingArguments(
             output_dir=f"./results_fold{fold}",
             eval_strategy="steps",
-            eval_steps=50,  # More frequent evaluation
+            eval_steps=50,
             save_strategy="steps",
             save_steps=50,
             per_device_train_batch_size=self.batch_size,
@@ -239,7 +237,8 @@ class EnhancedKenyaClinical:
             num_train_epochs=self.num_epochs,
             learning_rate=self.learning_rate,
             weight_decay=self.weight_decay,
-            warmup_steps=num_warmup_steps,
+            warmup_ratio=self.warmup_ratio,  # Use ratio directly
+            lr_scheduler_type="linear",  # Use a stable scheduler
             predict_with_generate=True,
             fp16=torch.cuda.is_available(),
             dataloader_pin_memory=True,
@@ -252,7 +251,6 @@ class EnhancedKenyaClinical:
             report_to="none",
             generation_max_length=self.max_target_length,
             generation_num_beams=self.num_beams,
-            lr_scheduler_type="cosine",  # Better learning rate schedule
             remove_unused_columns=False,
         )
         
@@ -519,8 +517,8 @@ def main():
     model_handler = EnhancedKenyaClinical(
         model_name='google/flan-t5-small',  # Best compromise for constraints
         max_input_length=512,
-        max_target_length=128,
-        batch_size=16,
+        max_target_length=100,
+        batch_size=8,
         num_epochs=6,
         learning_rate=3e-4,
         n_splits=5
