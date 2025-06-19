@@ -61,12 +61,12 @@ class OptimizedKenyaClinical:
     
     def __init__(self, 
                  model_name: str = 'google/flan-t5-small',
-                 max_length: int = 256,
-                 batch_size: int = 8,
-                 num_epochs: int = 4,    # Reduce epochs to help generalization
+                 max_length: int = 290,
+                 batch_size: int = 16,
+                 num_epochs: int = 10,    # Reduce epochs to help generalization
                  learning_rate: float = 1e-4, # Lower LR
                  num_beams: int = 2,
-                 early_stopping_patience: int = 2,
+                 early_stopping_patience: int = 3,
                  n_splits: int = 3):
         self.model_name = model_name
         self.max_length = max_length
@@ -96,8 +96,12 @@ class OptimizedKenyaClinical:
                 labels = self.tokenizer(
                     text_target=examples["target_text"], max_length=self.max_length, truncation=True,
                     padding="max_length"
-                )
-                model_inputs["labels"] = labels["input_ids"]
+                )["input_ids"]
+                labels = [
+                    [(token if token != self.tokenizer.pad_token_id else -100) for token in label_seq]
+                    for label_seq in labels
+                ]
+                model_inputs["labels"] = labels
             return model_inputs
 
         tokenized = dataset.map(tokenize_function, batched=True, batch_size=32, remove_columns=dataset.column_names)
