@@ -61,7 +61,7 @@ class OptimizedKenyaClinical:
     
     def __init__(self, 
                  model_name: str = 'google/flan-t5-small',
-                 max_length: int = 290,
+                 max_length: int = 128,  # Reduced for less padding and better learning
                  batch_size: int = 16,
                  num_epochs: int = 10,    # Reduce epochs to help generalization
                  learning_rate: float = 1e-4, # Lower LR
@@ -85,12 +85,13 @@ class OptimizedKenyaClinical:
         if is_train:
             target_texts = df['Clinician'].tolist()
             data["target_text"] = target_texts
+            print("Empty targets:", [t for t in target_texts if not t.strip()])
         dataset = Dataset.from_dict(data)
 
         def tokenize_function(examples):
             model_inputs = self.tokenizer(
                 examples["input_text"], max_length=self.max_length, truncation=True,
-                padding="max_length"
+                padding="longest"
             )
             if is_train:
                 labels = self.tokenizer(
@@ -101,7 +102,11 @@ class OptimizedKenyaClinical:
                     [(token if token != self.tokenizer.pad_token_id else -100) for token in label_seq]
                     for label_seq in labels
                 ]
-                model_inputs["labels"] = labels
+                # Convert to torch.LongTensor
+                model_inputs["labels"] = [torch.tensor(label_seq, dtype=torch.long) for label_seq in labels]
+            if is_train:
+                print("Sample labels:", model_inputs["labels"][:3])
+                print("Count of non-masked tokens in first label:", sum([x != -100 for x in model_inputs["labels"][0]]))
             return model_inputs
 
         tokenized = dataset.map(tokenize_function, batched=True, batch_size=32, remove_columns=dataset.column_names)
