@@ -1,4 +1,3 @@
-```markdown
 # Kenya Clinical Reasoning Challenge: To-Do List
 
 Below is the comprehensive list of tasks we'll tackle:
