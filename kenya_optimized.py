@@ -100,7 +100,12 @@ class OptimizedKenyaClinical:
                 model_inputs["labels"] = labels["input_ids"]
             return model_inputs
 
-        return dataset.map(tokenize_function, batched=True, batch_size=32, remove_columns=dataset.column_names)
+        tokenized = dataset.map(tokenize_function, batched=True, batch_size=32, remove_columns=dataset.column_names)
+        print(tokenized[0])
+        if is_train:
+            print("Sample input:", dataset[0]["input_text"])
+            print("Sample target:", dataset[0]["target_text"])
+        return tokenized
     
     def quantize_model(self, model):
         """
