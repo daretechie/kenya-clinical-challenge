@@ -42,12 +42,12 @@ CONFIG = {
     "model_name": "google/flan-t5-base",
     "max_input_length": 1024,
     "max_target_length": 512,
-    "batch_size": 8,
+    "batch_size": 4,
     "learning_rate": 3e-4,
     "num_train_epochs": 10,
     "warmup_steps": 500,
     "weight_decay": 0.01,
-    "gradient_accumulation_steps": 2,
+    "gradient_accumulation_steps": 4,
     "logging_steps": 10,
     "save_steps": 100,
     "eval_steps": 50,
@@ -385,14 +385,15 @@ def main():
             logging_steps=CONFIG["logging_steps"],
             save_steps=CONFIG["save_steps"],
             eval_steps=CONFIG["eval_steps"],
-            eval_strategy="steps",
+            evaluation_strategy="steps",
             save_strategy="steps",
             save_total_limit=CONFIG["save_total_limit"],
             load_best_model_at_end=CONFIG["load_best_model_at_end"],
             metric_for_best_model=CONFIG["metric_for_best_model"],
             fp16=CONFIG["use_fp16"],
             report_to="wandb",
-            disable_tqdm=False
+            disable_tqdm=False,
+            gradient_checkpointing=True
         )
         
         # Create trainer
