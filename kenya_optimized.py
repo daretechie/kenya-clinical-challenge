@@ -40,8 +40,8 @@ wandb.init(project="kenya-clinical-challenge")
 # Configuration
 CONFIG = {
     "model_name": "google/flan-t5-base",
-    "max_input_length": 1024,
-    "max_target_length": 512,
+    "max_input_length": 286,
+    "max_target_length": 154,
     "batch_size": 4,
     "learning_rate": 3e-4,
     "num_train_epochs": 10,
@@ -146,6 +146,19 @@ class PromptTuning(nn.Module):
         """Initialize prefix embeddings with random values"""
         nn.init.xavier_uniform_(self.prefix_encoder.weight)
         
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        self.base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
+    def gradient_checkpointing_disable(self):
+        self.base_model.gradient_checkpointing_disable()
+
+    def __getattr__(self, name):
+        """Forward missing attributes to the base model."""
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.base_model, name)
+
     def forward(self, input_ids, attention_mask=None, labels=None, num_items_in_batch=None, **kwargs):
         # Get input embeddings
         inputs_embeds = self.base_model.get_input_embeddings()(input_ids)
