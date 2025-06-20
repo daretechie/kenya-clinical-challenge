@@ -385,7 +385,7 @@ def main():
             logging_steps=CONFIG["logging_steps"],
             save_steps=CONFIG["save_steps"],
             eval_steps=CONFIG["eval_steps"],
-            evaluation_strategy="steps",
+            eval_strategy="steps",
             save_strategy="steps",
             save_total_limit=CONFIG["save_total_limit"],
             load_best_model_at_end=CONFIG["load_best_model_at_end"],
