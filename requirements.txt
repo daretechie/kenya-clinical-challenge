@@ -17,3 +17,4 @@ accelerate
 transformers[torch]
 wandb
 sentencepiece
+huggingface_hub[hf_xet]
