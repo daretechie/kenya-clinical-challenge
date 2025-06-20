@@ -146,7 +146,7 @@ class PromptTuning(nn.Module):
         """Initialize prefix embeddings with random values"""
         nn.init.xavier_uniform_(self.prefix_encoder.weight)
         
-    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, labels=None, num_items_in_batch=None, **kwargs):
         # Get input embeddings
         inputs_embeds = self.base_model.get_input_embeddings()(input_ids)
         
