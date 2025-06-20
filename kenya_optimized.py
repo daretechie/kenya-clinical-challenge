@@ -1,596 +1,486 @@
 """
-Kenya Clinical Challenge - Fixed Competitive Solution
-==================================================
-
-Key Fixes:
-- Fixed model training issues (proper labels, loss computation)
-- Reduced memory usage to <2GB
-- Optimized for <100ms inference
-- Better preprocessing and prompt engineering
-- Improved model architecture choices
-- Fixed gradient computation issues
+Kenya Clinical Challenge - Optimized Solution
 """
 
 import os
-import gc
-import time
-import torch
+import re
+import warnings
+import argparse
+import random
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Tuple, Optional
-import psutil
-import re
-import json
-from collections import Counter, defaultdict
-from tqdm import tqdm
-import warnings
-warnings.filterwarnings('ignore')
-
-# Core ML libraries
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from transformers import (
-    AutoTokenizer, AutoModelForSeq2SeqLM,
-    Seq2SeqTrainer, Seq2SeqTrainingArguments,
-    DataCollatorForSeq2Seq, EarlyStoppingCallback
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+    DataCollatorForSeq2Seq,
+    AdamW,
+    get_linear_schedule_with_warmup,
+    Trainer,
+    TrainingArguments,
 )
-from datasets import Dataset
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from rouge_score import rouge_scorer
-from sklearn.model_selection import StratifiedKFold
-import torch.nn.functional as F
+from transformers import set_seed
+from transformers.trainer_utils import get_last_checkpoint
+import wandb
+import onnx
+import onnxruntime as ort
+from pathlib import Path
+from datetime import datetime
 
-def get_memory_usage():
-    """Monitor memory usage in MB"""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1e6
+# Set up logging
+os.makedirs("logs", exist_ok=True)
 
-def set_seed(seed=42):
-    """Set all random seeds for reproducibility"""
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+# Initialize W&B for tracking
+os.makedirs("wandb", exist_ok=True)
+wandb.init(project="kenya-clinical-challenge")
 
-class CompetitiveKenyaClinical:
-    """
-    Fixed competitive solution for Kenya Clinical Challenge
-    """
-    
-    def __init__(self, 
-                 model_name: str = 'google/flan-t5-small',
-                 max_input_length: int = 384,  # Reduced for memory
-                 max_target_length: int = 64,   # Reduced for speed
-                 batch_size: int = 8,           # Reduced for memory
-                 num_epochs: int = 4,           # Reduced for efficiency
-                 learning_rate: float = 5e-4,   # Better learning rate
-                 weight_decay: float = 0.01,
-                 warmup_ratio: float = 0.1,
-                 num_beams: int = 2,            # Reduced for speed
-                 early_stopping_patience: int = 2,
-                 n_splits: int = 3):            # Reduced for efficiency
-        
-        self.model_name = model_name
-        self.max_input_length = max_input_length
-        self.max_target_length = max_target_length
-        self.batch_size = batch_size
-        self.num_epochs = num_epochs
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.warmup_ratio = warmup_ratio
-        self.num_beams = num_beams
-        self.early_stopping_patience = early_stopping_patience
-        self.n_splits = n_splits
-        
-        # Initialize tokenizer with proper handling
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {self.device}")
+# Configuration
+CONFIG = {
+    "model_name": "google/flan-t5-base",
+    "max_input_length": 1024,
+    "max_target_length": 512,
+    "batch_size": 8,
+    "learning_rate": 3e-4,
+    "num_train_epochs": 10,
+    "warmup_steps": 500,
+    "weight_decay": 0.01,
+    "gradient_accumulation_steps": 2,
+    "logging_steps": 10,
+    "save_steps": 100,
+    "eval_steps": 50,
+    "seed": 42,
+    "n_splits": 5,
+    "use_fp16": True,
+    "output_dir": "./results",
+    "save_total_limit": 2,
+    "load_best_model_at_end": True,
+    "metric_for_best_model": "rouge-combined",
+    "do_lower": True,
+    "early_stopping_patience": 3,
+    "use_prompt_tuning": True,
+    "prefix_length": 20,
+    "num_beams": 4,
+    "do_sample": True,
+    "temperature": 0.7,
+    "top_k": 50,
+    "top_p": 0.95
+}
 
-    def enhanced_preprocessing(self, text: str) -> str:
-        """Enhanced text preprocessing for clinical text"""
-        if pd.isna(text):
-            return ""
-        
-        text = str(text).strip()
-        
-        # Remove excessive whitespace
-        text = re.sub(r'\s+', ' ', text)
-        
-        # Remove special characters that might cause issues
-        text = re.sub(r'[^\w\s\.,;:()-]', '', text)
-        
-        # Standardize medical abbreviations
-        medical_abbrevs = {
-            r'\bpt\b': 'patient',
-            r'\bpts\b': 'patients', 
-            r'\bhx\b': 'history',
-            r'\btx\b': 'treatment',
-            r'\bdx\b': 'diagnosis',
-            r'\brx\b': 'prescription',
-            r'\bsy\b': 'symptoms',
-            r'\bc/o\b': 'complains of',
-            r'\bp/e\b': 'physical examination',
-            r'\by/o\b': 'year old',
-            r'\bw/\b': 'with',
-            r'\bw/o\b': 'without'
-        }
-        
-        for abbrev, full_form in medical_abbrevs.items():
-            text = re.sub(abbrev, full_form, text, flags=re.IGNORECASE)
-        
-        return text[:500]  # Truncate for memory efficiency
+# Set random seed for reproducibility
+set_seed(CONFIG["seed"])
+random.seed(CONFIG["seed"])
+np.random.seed(CONFIG["seed"])
+torch.manual_seed(CONFIG["seed"])
 
-    def create_stratified_splits(self, df: pd.DataFrame) -> List[Tuple[np.ndarray, np.ndarray]]:
-        """Create stratified splits based on text length"""
-        lengths = df['Prompt'].str.len()
-        quartiles = pd.qcut(lengths, q=3, labels=['short', 'medium', 'long'])  # 3 quartiles for 3 splits
-        
-        skf = StratifiedKFold(n_splits=self.n_splits, shuffle=True, random_state=42)
-        return list(skf.split(df, quartiles))
+# Data paths (adjust as needed)
+TRAIN_CSV = 'data/train.csv'
+TEST_CSV = 'data/test.csv'
+SUBMISSION_CSV = 'submission_competitive.csv'
 
-    def preprocess_data(self, df: pd.DataFrame, is_train=True) -> Dataset:
-        """Fixed preprocessing with proper label handling"""
+# Initialize log file
+log_file = f"logs/training_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+def log_message(message):
+    with open(log_file, "a") as f:
+        f.write(f"{datetime.now().isoformat()}: {message}\n")
+    print(message)
+
+# Normalize text
+def normalize_text(text):
+    """Normalize text for consistent evaluation"""
+    if pd.isna(text):
+        return ""
+    text = str(text)
+    if CONFIG["do_lower"]:
+        text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+# Dataset Class
+class ClinicalDataset(Dataset):
+    def __init__(self, texts, labels=None, tokenizer=None):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
         
-        # Create better prompts
-        input_texts = []
-        for _, row in df.iterrows():
-            prompt = self.enhanced_preprocessing(row['Prompt'])
-            
-            # More concise prompt for better performance
-            enhanced_prompt = f"Summarize this clinical case: {prompt}"
-            input_texts.append(enhanced_prompt)
+    def __len__(self):
+        return len(self.texts)
         
-        # Tokenize inputs
-        tokenized_inputs = self.tokenizer(
-            input_texts,
-            max_length=self.max_input_length,
+    def __getitem__(self, idx):
+        text = self.texts[idx]
+        encoding = self.tokenizer(
+            text,
+            max_length=CONFIG["max_input_length"],
+            padding="max_length",
             truncation=True,
-            padding=False,
-            return_tensors=None
+            return_tensors="pt"
         )
         
-        data = {
-            "input_ids": tokenized_inputs["input_ids"],
-            "attention_mask": tokenized_inputs["attention_mask"]
-        }
+        item = {key: val.squeeze(0) for key, val in encoding.items()}
         
-        if is_train:
-            # CRITICAL FIX: Proper target preprocessing
-            target_texts = []
-            for target in df['Clinician'].tolist():
-                cleaned_target = self.enhanced_preprocessing(target)
-                if not cleaned_target.strip():  # Handle empty targets
-                    cleaned_target = "No summary available."
-                target_texts.append(cleaned_target)
-            
-            # Tokenize targets properly
-            tokenized_targets = self.tokenizer(
-                target_texts,
-                max_length=self.max_target_length,
+        if self.labels is not None:
+            label_encoding = self.tokenizer(
+                self.labels[idx],
+                max_length=CONFIG["max_target_length"],
+                padding="max_length",
                 truncation=True,
-                padding=False,
-                return_tensors=None
+                return_tensors="pt"
             )
+            item["labels"] = label_encoding["input_ids"].squeeze(0)
             
-            # CRITICAL FIX: Proper label assignment
-            data["labels"] = tokenized_targets["input_ids"]
-        
-        return Dataset.from_dict(data)
+        return item
 
-    def compute_metrics(self, eval_preds):
-        """Fixed metrics computation"""
-        preds, labels = eval_preds
-        if isinstance(preds, tuple):
-            preds = preds[0]
+# Prompt Tuning Module
+class PromptTuning(nn.Module):
+    def __init__(self, base_model, prefix_length=20):
+        super().__init__()
+        self.base_model = base_model
+        self.prefix_length = prefix_length
+        self.prefix_encoder = nn.Embedding(prefix_length, base_model.get_input_embeddings().embedding_dim)
+        self.init_prefix_weights()
         
-        # Decode predictions - handle -100 labels properly
-        decoded_preds = []
-        for pred in preds:
-            # Remove padding tokens
-            pred_clean = [token for token in pred if token != self.tokenizer.pad_token_id]
-            decoded_pred = self.tokenizer.decode(pred_clean, skip_special_tokens=True)
-            decoded_preds.append(decoded_pred)
+    def init_prefix_weights(self):
+        """Initialize prefix embeddings with random values"""
+        nn.init.xavier_uniform_(self.prefix_encoder.weight)
         
-        # Decode labels - handle -100 properly
-        decoded_labels = []
-        for label in labels:
-            # Replace -100 with pad token for decoding
-            label_clean = [token if token != -100 else self.tokenizer.pad_token_id for token in label]
-            label_clean = [token for token in label_clean if token != self.tokenizer.pad_token_id]
-            decoded_label = self.tokenizer.decode(label_clean, skip_special_tokens=True)
-            decoded_labels.append(decoded_label)
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
+        # Get input embeddings
+        inputs_embeds = self.base_model.get_input_embeddings()(input_ids)
         
-        # Compute ROUGE scores
-        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        # Concatenate prefix embeddings
+        batch_size = input_ids.size(0)
+        prefix_embeds = self.prefix_encoder.weight.unsqueeze(0).expand(batch_size, -1, -1)
         
-        rouge1_scores = []
-        rouge2_scores = []
-        rougeL_scores = []
+        # Combine prefix and input embeddings
+        inputs_embeds = torch.cat([prefix_embeds, inputs_embeds], dim=1)
         
-        for ref, pred in zip(decoded_labels, decoded_preds):
-            if not ref.strip():  # Handle empty references
-                ref = "No summary"
-            if not pred.strip():  # Handle empty predictions
-                pred = "No summary"
-                
-            scores = scorer.score(ref, pred)
-            rouge1_scores.append(scores['rouge1'].fmeasure)
-            rouge2_scores.append(scores['rouge2'].fmeasure)
-            rougeL_scores.append(scores['rougeL'].fmeasure)
+        # Adjust attention mask
+        if attention_mask is not None:
+            prefix_mask = torch.ones(batch_size, self.prefix_length).to(attention_mask.device)
+            attention_mask = torch.cat([prefix_mask, attention_mask], dim=1)
         
-        return {
-            "rouge1": np.mean(rouge1_scores),
-            "rouge2": np.mean(rouge2_scores),
-            "rougeL": np.mean(rougeL_scores),
-            "combined_rouge": np.mean(rouge1_scores) + np.mean(rougeL_scores)
-        }
-
-    def train_fold(self, train_dataset, val_dataset, fold):
-        """Fixed training with proper model initialization"""
-        print(f"Training fold {fold + 1}/{self.n_splits}")
-        
-        # Load model fresh for each fold
-        model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-        model.to(self.device)
-        
-        # CRITICAL FIX: Ensure model is in training mode
-        model.train()
-        
-        # Verify model parameters are trainable
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Trainable parameters: {trainable_params:,}")
-        
-        # Fixed training arguments
-        training_args = Seq2SeqTrainingArguments(
-            output_dir=f"./results_fold{fold}",
-            eval_strategy="epoch",  # Evaluate each epoch
-            save_strategy="epoch",
-            per_device_train_batch_size=self.batch_size,
-            per_device_eval_batch_size=self.batch_size,
-            num_train_epochs=self.num_epochs,
-            learning_rate=self.learning_rate,
-            weight_decay=self.weight_decay,
-            warmup_ratio=self.warmup_ratio,
-            predict_with_generate=True,
-            fp16=torch.cuda.is_available(),
-            dataloader_pin_memory=True,
-            logging_steps=10,
-            load_best_model_at_end=True,
-            metric_for_best_model="rouge1",  # Use rouge1 as primary metric
-            greater_is_better=True,
-            save_total_limit=1,  # Save space
-            seed=42 + fold,
-            report_to="none",
-            generation_max_length=self.max_target_length,
-            generation_num_beams=self.num_beams,
-            remove_unused_columns=False,
-            # CRITICAL FIX: Proper gradient settings
-            gradient_checkpointing=True,  # Save memory
-            dataloader_num_workers=0,     # Avoid multiprocessing issues
+        # Forward pass through base model
+        outputs = self.base_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            labels=labels,
+            **kwargs
         )
         
-        # Data collator with proper padding
-        data_collator = DataCollatorForSeq2Seq(
-            self.tokenizer,
-            model=model,
-            padding=True,
-            label_pad_token_id=-100,  # CRITICAL: Use -100 for ignored tokens
-            pad_to_multiple_of=8 if torch.cuda.is_available() else None,
-        )
+        return outputs
 
-        # Initialize trainer
-        trainer = Seq2SeqTrainer(
+# Compute Metrics
+def compute_metrics(pred, tokenizer):
+    """Compute ROUGE metrics for evaluation"""
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+    predictions = tokenizer.batch_decode(pred.predictions, skip_special_tokens=True)
+    references = tokenizer.batch_decode(pred.label_ids, skip_special_tokens=True)
+    
+    scores = []
+    for pred, ref in zip(predictions, references):
+        score = scorer.score(pred, ref)
+        scores.append({
+            "rouge1": score["rouge1"].fmeasure,
+            "rouge2": score["rouge2"].fmeasure,
+            "rougeL": score["rougeL"].fmeasure,
+        })
+    
+    result = {k: np.mean([s[k] for s in scores]) for k in scores[0]}
+    result["rouge-combined"] = result["rouge1"] + result["rouge2"] + result["rougeL"]
+    
+    # Log metrics to W&B
+    wandb.log({
+        "eval/rouge1": result["rouge1"],
+        "eval/rouge2": result["rouge2"],
+        "eval/rougeL": result["rougeL"],
+        "eval/rouge-combined": result["rouge-combined"]
+    })
+    
+    return result
+
+# Data Augmentation
+def augment_prompt(text):
+    """Augment clinical prompts for data augmentation"""
+    # Simple synonym replacement
+    replacements = {
+        "child": "pediatric patient",
+        "kidney": "renal",
+        "heart": "cardiac",
+        "lungs": "pulmonary",
+        "liver": "hepatic",
+        "intestine": "gastrointestinal",
+        "stomach": "gastric",
+        "bladder": "urinary"
+    }
+    
+    # Replace words with synonyms
+    for old, new in replacements.items():
+        if random.random() < 0.3:  # 30% chance to replace each word
+            text = text.replace(old, new)
+    
+    return text
+
+# Load and Preprocess Data
+def load_data():
+    """Load and preprocess the clinical data"""
+    log_message("Loading and preprocessing data...")
+    
+    # Create data directory if it doesn't exist
+    os.makedirs("data", exist_ok=True)
+    
+    # Check if data files exist
+    if not os.path.exists(TRAIN_CSV) or not os.path.exists(TEST_CSV):
+        raise FileNotFoundError(f"Data files not found: {TRAIN_CSV} and {TEST_CSV}")
+    
+    df_train = pd.read_csv(TRAIN_CSV)
+    df_test = pd.read_csv(TEST_CSV)
+    
+    log_message(f"Original train shape: {df_train.shape}")
+    log_message(f"Original test shape: {df_test.shape}")
+    
+    # Validate required columns
+    required_columns = ['Prompt', 'Clinician']
+    for col in required_columns:
+        if col not in df_train.columns:
+            raise ValueError(f"Missing required column in train data: {col}")
+    
+    # Clean and normalize text
+    df_train["text"] = df_train["Prompt"].apply(normalize_text)
+    df_train["summary"] = df_train["Clinician"].apply(normalize_text)
+    
+    # Apply data augmentation
+    augmented_texts = df_train["text"].apply(augment_prompt).tolist()
+    augmented_summaries = df_train["summary"].tolist()
+    
+    df_augmented = pd.DataFrame({
+        "text": augmented_texts,
+        "summary": augmented_summaries
+    })
+    
+    # Combine original and augmented data
+    df_full = pd.concat([df_train[["text", "summary"]], df_augmented], axis=0, ignore_index=True)
+    df_full = df_full.sample(frac=1, random_state=CONFIG["seed"]).reset_index(drop=True)
+    
+    log_message(f"Cleaned train shape: {df_full.shape}")
+    
+    return df_full[["text", "summary"]], df_test
+
+# ONNX Exporter
+def export_to_onnx(model, tokenizer, output_path="model.onnx"):
+    """Export model to ONNX format for deployment"""
+    log_message("Exporting model to ONNX format...")
+    
+    # Create output directory
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Create dummy input
+    dummy_input = "A 4-year-old child presents with second-degree burns."
+    inputs = tokenizer(dummy_input, return_tensors="pt", padding=True, truncation=True)
+    
+    # Export model to ONNX
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (inputs["input_ids"], inputs["attention_mask"]),
+            output_path,
+            input_names=["input_ids", "attention_mask"],
+            output_names=["logits"],
+            dynamic_axes={
+                "input_ids": {0: "batch_size", 1: "sequence_length"},
+                "attention_mask": {0: "batch_size", 1: "sequence_length"},
+                "logits": {0: "batch_size", 1: "sequence_length"}
+            },
+            opset_version=13,
+            export_params=True
+        )
+    
+    log_message(f"Model exported to {output_path}")
+    return output_path
+
+# ONNX Inference
+class ONNXInference:
+    def __init__(self, onnx_path):
+        self.ort_session = ort.InferenceSession(onnx_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(CONFIG["model_name"])
+        
+    def predict(self, text):
+        """Generate prediction from ONNX model"""
+        inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+        
+        # Run inference
+        outputs = self.ort_session.run(
+            None,
+            {
+                "input_ids": inputs["input_ids"].numpy(),
+                "attention_mask": inputs["attention_mask"].numpy()
+            }
+        )
+        
+        # Decode output
+        predictions = np.argmax(outputs[0], axis=-1)
+        return self.tokenizer.decode(predictions[0], skip_special_tokens=True)
+
+# Main Function
+def main():
+    """Main training and prediction pipeline"""
+    log_message("Starting Kenya Clinical Challenge solution")
+    
+    # Load and preprocess data
+    df_train, df_test = load_data()
+    train_texts = df_train["text"].tolist()
+    train_labels = df_train["summary"].tolist()
+    test_texts = df_test["Prompt"].apply(normalize_text).tolist()
+    
+    # Load tokenizer and model
+    log_message(f"Loading tokenizer: {CONFIG['model_name']}")
+    tokenizer = AutoTokenizer.from_pretrained(CONFIG["model_name"])
+    
+    log_message(f"Loading model: {CONFIG['model_name']}")
+    model = AutoModelForSeq2SeqLM.from_pretrained(CONFIG["model_name"])
+    
+    # Add prompt tuning if enabled
+    if CONFIG["use_prompt_tuning"]:
+        log_message("Applying prompt tuning...")
+        model = PromptTuning(model, CONFIG["prefix_length"])
+    
+    # Resize token embeddings (if prompt tuning is applied)
+    model.base_model.resize_token_embeddings(len(tokenizer))
+    
+    # Create dataset
+    dataset = ClinicalDataset(train_texts, train_labels, tokenizer)
+    
+    # K-Fold Cross Validation
+    log_message(f"Starting {CONFIG['n_splits']}-fold cross-validation")
+    kf = KFold(n_splits=CONFIG["n_splits"], shuffle=True, random_state=CONFIG["seed"])
+    
+    # Store all predictions for ensemble
+    all_predictions = []
+    
+    # Cross-validation loop
+    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+        log_message(f"Training fold {fold+1}/{CONFIG['n_splits']}")
+        
+        # Split dataset
+        train_subset = torch.utils.data.Subset(dataset, train_idx)
+        val_subset = torch.utils.data.Subset(dataset, val_idx)
+        
+        # Create training arguments
+        training_args = TrainingArguments(
+            output_dir=f"{CONFIG['output_dir']}_fold{fold+1}",
+            overwrite_output_dir=True,
+            num_train_epochs=CONFIG["num_train_epochs"],
+            per_device_train_batch_size=CONFIG["batch_size"],
+            per_device_eval_batch_size=CONFIG["batch_size"],
+            gradient_accumulation_steps=CONFIG["gradient_accumulation_steps"],
+            learning_rate=CONFIG["learning_rate"],
+            warmup_steps=CONFIG["warmup_steps"],
+            weight_decay=CONFIG["weight_decay"],
+            logging_dir=f"./logs/fold_{fold+1}",
+            logging_steps=CONFIG["logging_steps"],
+            save_steps=CONFIG["save_steps"],
+            eval_steps=CONFIG["eval_steps"],
+            evaluation_strategy="steps",
+            save_strategy="steps",
+            save_total_limit=CONFIG["save_total_limit"],
+            load_best_model_at_end=CONFIG["load_best_model_at_end"],
+            metric_for_best_model=CONFIG["metric_for_best_model"],
+            fp16=CONFIG["use_fp16"],
+            report_to="wandb",
+            disable_tqdm=False
+        )
+        
+        # Create trainer
+        trainer = Trainer(
             model=model,
             args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=val_dataset,
-            data_collator=data_collator,
-            tokenizer=self.tokenizer,
-            compute_metrics=self.compute_metrics,
-            callbacks=[EarlyStoppingCallback(early_stopping_patience=self.early_stopping_patience)]
+            train_dataset=train_subset,
+            eval_dataset=val_subset,
+            data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
+            compute_metrics=lambda pred: compute_metrics(pred, tokenizer),
+            tokenizer=tokenizer
         )
-
+        
         # Train model
+        log_message("Starting training...")
         trainer.train()
         
-        # Generate predictions for validation
-        predictions = self.generate_predictions_optimized(trainer.model, val_dataset)
+        # Evaluate model
+        log_message("Evaluating model...")
+        metrics = trainer.evaluate()
+        log_message(f"Fold {fold+1} Evaluation: {metrics}")
         
-        # Clean up
-        best_model = trainer.model
-        del trainer
-        torch.cuda.empty_cache()
-        gc.collect()
+        # Generate predictions for this fold
+        log_message(f"Generating predictions for fold {fold+1}...")
+        predictions = trainer.predict(val_subset)
+        pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
         
-        return best_model, predictions
-
-    def generate_predictions_optimized(self, model, dataset) -> List[str]:
-        """Optimized prediction generation for speed"""
-        model.eval()
-        predictions = []
+        # Store predictions for ensemble
+        all_predictions.append(pred_texts)
         
-        # Process in smaller batches for memory efficiency
-        effective_batch_size = 4  # Smaller for memory
+        # Save model checkpoint
+        model_path = f"./models/fold_{fold+1}"
+        os.makedirs(model_path, exist_ok=True)
+        model.save_pretrained(model_path)
+        tokenizer.save_pretrained(model_path)
         
-        for i in tqdm(range(0, len(dataset), effective_batch_size), desc="Generating predictions"):
-            batch_data = dataset[i:i+effective_batch_size]
+        # Export to ONNX
+        onnx_path = f"./models/fold_{fold+1}.onnx"
+        export_to_onnx(model, tokenizer, onnx_path)
+    
+    # Ensemble predictions from all folds
+    log_message("Generating final ensemble predictions...")
+    final_predictions = []
+    
+    # Average predictions from all folds
+    test_dataset = ClinicalDataset(test_texts, tokenizer=tokenizer)
+    
+    # Generate predictions for test set using each fold
+    fold_predictions = []
+    for fold in range(CONFIG["n_splits"]):
+        log_message(f"Generating predictions for fold {fold+1}...")
+        trainer = Trainer(
+            model=model,
+            args=TrainingArguments(output_dir="./results"),
+        )
+        predictions = trainer.predict(test_dataset)
+        pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
+        fold_predictions.append(pred_texts)
+        
+    # Ensemble predictions by averaging
+    for i in range(len(test_texts)):
+        # Combine predictions from all folds
+        combined_pred = " ".join([pred[i] for pred in fold_predictions])
+        
+        # Post-process
+        if not combined_pred.startswith("summary "):
+            combined_pred = "summary " + combined_pred
             
-            # Handle single sample vs batch
-            if not isinstance(batch_data['input_ids'][0], list):
-                batch_data = {k: [v] for k, v in batch_data.items()}
-            
-            # Convert to tensors
-            input_ids = torch.tensor(batch_data['input_ids']).to(self.device)
-            attention_mask = torch.tensor(batch_data['attention_mask']).to(self.device)
-            
-            with torch.no_grad():
-                # Optimized generation for speed
-                outputs = model.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    max_length=self.max_target_length,
-                    min_length=5,
-                    num_beams=self.num_beams,
-                    length_penalty=1.0,
-                    early_stopping=True,
-                    do_sample=False,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    no_repeat_ngram_size=2  # Prevent repetition
-                )
-                
-                # Decode predictions
-                batch_predictions = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-                predictions.extend(batch_predictions)
-        
-        return predictions
-
-    def ensemble_predictions(self, predictions_list: List[List[str]], 
-                           weights: Optional[List[float]] = None) -> List[str]:
-        """Simple ensemble - use best performing fold"""
-        if weights is None:
-            weights = [1.0] * len(predictions_list)
-        
-        # Use predictions from best fold
-        best_fold_idx = np.argmax(weights)
-        return predictions_list[best_fold_idx]
-
-    def evaluate_performance(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
-        """Performance evaluation"""
-        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-        
-        rouge1_scores = []
-        rouge2_scores = []
-        rougeL_scores = []
-        
-        for pred, ref in zip(predictions, references):
-            if not ref.strip():
-                ref = "No summary"
-            if not pred.strip():
-                pred = "No summary"
-                
-            scores = scorer.score(ref, pred)
-            rouge1_scores.append(scores['rouge1'].fmeasure)
-            rouge2_scores.append(scores['rouge2'].fmeasure)
-            rougeL_scores.append(scores['rougeL'].fmeasure)
-        
-        return {
-            "rouge1": np.mean(rouge1_scores),
-            "rouge2": np.mean(rouge2_scores),
-            "rougeL": np.mean(rougeL_scores),
-            "rouge1_std": np.std(rouge1_scores),
-            "rouge2_std": np.std(rouge2_scores),
-            "rougeL_std": np.std(rougeL_scores)
-        }
-
-    def train_and_predict(self, train_df: pd.DataFrame, test_df: pd.DataFrame) -> Tuple[List[str], List[str]]:
-        """Main training and prediction pipeline"""
-        # Preprocess test data once
-        test_dataset = self.preprocess_data(test_df, is_train=False)
-        
-        # Create stratified splits
-        splits = self.create_stratified_splits(train_df)
-        
-        oof_predictions = np.empty(len(train_df), dtype=object)
-        test_predictions_folds = []
-        fold_scores = []
-
-        for fold, (train_idx, val_idx) in enumerate(splits):
-            set_seed(42 + fold)
-            
-            train_data = train_df.iloc[train_idx].reset_index(drop=True)
-            val_data = train_df.iloc[val_idx].reset_index(drop=True)
-            
-            # Preprocess data for current fold
-            train_dataset = self.preprocess_data(train_data)
-            val_dataset = self.preprocess_data(val_data)
-
-            # Train fold
-            model, val_preds = self.train_fold(train_dataset, val_dataset, fold)
-            oof_predictions[val_idx] = val_preds
-
-            # Evaluate fold performance
-            val_references = val_data["Clinician"].tolist()
-            fold_score = self.evaluate_performance(val_preds, val_references)
-            fold_scores.append(fold_score["rouge1"])  # Use rouge1 for weighting
-            print(f"Fold {fold + 1} ROUGE-1 Score: {fold_score['rouge1']:.4f}")
-
-            # Generate test predictions
-            test_preds = self.generate_predictions_optimized(model, test_dataset)
-            test_predictions_folds.append(test_preds)
-
-            # Memory cleanup
-            del model, train_dataset, val_dataset
-            gc.collect()
-            torch.cuda.empty_cache()
-
-        # Ensemble predictions
-        final_test_predictions = self.ensemble_predictions(test_predictions_folds, fold_scores)
-        
-        return oof_predictions.tolist(), final_test_predictions
-
-    def benchmark_inference(self, num_samples: int = 10) -> Dict[str, float]:
-        """Benchmark inference performance"""
-        print("Benchmarking inference performance...")
-        
-        model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-        model.to(self.device)
-        model.eval()
-        
-        # Single sample for realistic benchmarking
-        dummy_text = "Patient presents with chest pain and shortness of breath."
-        
-        # Tokenize
-        inputs = self.tokenizer(
-            dummy_text,
-            max_length=self.max_input_length,
-            truncation=True,
-            padding=True,
-            return_tensors="pt"
-        ).to(self.device)
-        
-        # Warm up
-        with torch.no_grad():
-            for _ in range(3):
-                _ = model.generate(**inputs, max_length=self.max_target_length, num_beams=self.num_beams)
-        
-        # Benchmark
-        times = []
-        start_memory = get_memory_usage()
-        
-        with torch.no_grad():
-            for i in range(num_samples):
-                start_time = time.time()
-                
-                outputs = model.generate(
-                    **inputs,
-                    max_length=self.max_target_length,
-                    num_beams=self.num_beams,
-                    early_stopping=True
-                )
-                
-                sample_time = (time.time() - start_time) * 1000
-                times.append(sample_time)
-                print(f"Sample {i+1}: {sample_time:.2f}ms")
-        
-        end_memory = get_memory_usage()
-        
-        # Cleanup
-        del model, inputs
-        gc.collect()
-        torch.cuda.empty_cache()
-        
-        return {
-            "avg_inference_time_ms": np.mean(times),
-            "memory_usage_mb": end_memory - start_memory,
-            "max_time_ms": np.max(times),
-            "min_time_ms": np.min(times)
-        }
-
-def main():
-    """Main execution function"""
-    print("=== Kenya Clinical Challenge - Fixed Competitive Solution ===")
+        final_predictions.append(combined_pred)
     
-    # Set seed for reproducibility
-    set_seed(42)
-    
-    # Check memory constraints
-    initial_memory = get_memory_usage()
-    print(f"Initial memory usage: {initial_memory:.2f} MB")
-
-    # Data paths (adjust as needed)
-    TRAIN_CSV = 'data/train.csv'
-    TEST_CSV = 'data/test.csv'
-    SUBMISSION_CSV = 'submission_competitive.csv'
-    
-    # Create dummy data for testing if files don't exist
-    if not os.path.exists('data'):
-        print("Creating dummy data for testing...")
-        os.makedirs('data', exist_ok=True)
-        
-        # Create dummy training data
-        dummy_train = pd.DataFrame({
-            'Prompt': [f"Patient {i} presents with various symptoms including pain and discomfort. Medical history shows previous treatments." for i in range(100)],
-            'Clinician': [f"Patient {i} summary: symptoms and treatment plan." for i in range(100)]
-        })
-        dummy_train.to_csv(TRAIN_CSV, index=False)
-        
-        # Create dummy test data
-        dummy_test = pd.DataFrame({
-            'Master_Index': range(25),
-            'Prompt': [f"Test patient {i} case description with medical details." for i in range(25)]
-        })
-        dummy_test.to_csv(TEST_CSV, index=False)
-        print("Dummy data created for testing")
-
-    # Load and validate data
-    print("Loading and validating data...")
-    train_df = pd.read_csv(TRAIN_CSV)
-    test_df = pd.read_csv(TEST_CSV)
-    
-    # Data validation and cleaning
-    print(f"Original train shape: {train_df.shape}")
-    train_df.dropna(subset=['Prompt', 'Clinician'], inplace=True)
-    print(f"Cleaned train shape: {train_df.shape}")
-    print(f"Test shape: {test_df.shape}")
-    
-    # Initialize model with optimized parameters
-    model_handler = CompetitiveKenyaClinical(
-        model_name='google/flan-t5-small',  # Good balance for constraints
-        max_input_length=384,   # Reduced for memory
-        max_target_length=64,   # Reduced for speed
-        batch_size=8,          # Reduced for memory
-        num_epochs=4,          # Reduced for efficiency
-        learning_rate=5e-4,    # Better learning rate
-        n_splits=3             # Reduced for efficiency
-    )
-    
-    # Benchmark inference
-    benchmark_results = model_handler.benchmark_inference(num_samples=5)
-    print(f"\nBenchmark Results:")
-    print(f"  Average inference time: {benchmark_results['avg_inference_time_ms']:.2f}ms")
-    print(f"  Max inference time: {benchmark_results['max_time_ms']:.2f}ms")
-    print(f"  Memory usage: {benchmark_results['memory_usage_mb']:.2f}MB")
-    
-    if benchmark_results['avg_inference_time_ms'] > 100:
-        print("⚠️  WARNING: Average inference time may exceed 100ms constraint!")
-    if benchmark_results['max_time_ms'] > 100:
-        print("⚠️  WARNING: Max inference time exceeds 100ms constraint!")
-    
-    # Train and predict
-    print("\nStarting training and prediction...")
-    oof_predictions, test_predictions = model_handler.train_and_predict(train_df, test_df)
-    
-    # Comprehensive evaluation
-    oof_references = train_df["Clinician"].tolist()
-    oof_scores = model_handler.evaluate_performance(oof_predictions, oof_references)
-    
-    print(f"\n=== Out-of-Fold Performance ===")
-    print(f"ROUGE-1: {oof_scores['rouge1']:.4f} ± {oof_scores['rouge1_std']:.4f}")
-    print(f"ROUGE-2: {oof_scores['rouge2']:.4f} ± {oof_scores['rouge2_std']:.4f}")
-    print(f"ROUGE-L: {oof_scores['rougeL']:.4f} ± {oof_scores['rougeL_std']:.4f}")
-    
-    # Create submission
+    # Create submission file
+    log_message("Creating submission file...")
     submission = pd.DataFrame({
-        "Master_Index": test_df["Master_Index"],
-        "Clinician": test_predictions
+        "Master_Index": df_test["Master_Index"],
+        "Clinician": final_predictions
     })
+    
+    # Save submission
     submission.to_csv(SUBMISSION_CSV, index=False)
-    print(f"\nSubmission saved: {SUBMISSION_CSV}")
+    log_message(f"Submission file created: {SUBMISSION_CSV}")
     
-    # Final checks
-    final_memory = get_memory_usage()
-    print(f"\nFinal memory usage: {final_memory:.2f} MB")
+    # Export final model to ONNX
+    log_message("Exporting final model to ONNX format...")
+    final_onnx_path = "final_model.onnx"
+    export_to_onnx(model, tokenizer, final_onnx_path)
     
-    if final_memory > 2000:
-        print("⚠️  WARNING: Memory usage exceeds 2GB constraint!")
-    else:
-        print("✅ Memory usage within constraints")
-    
-    print("\n=== Fixed Competitive Solution Complete ===")
+    log_message("Training and prediction pipeline completed successfully!")
 
 if __name__ == "__main__":
     main()
