@@ -183,3 +183,6 @@ results_fold7/
 results_fold8/
 results_fold9/
 results_fold0/
+wandb/
+log/
+wandb/latest-run/
