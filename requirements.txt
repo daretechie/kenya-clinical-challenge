@@ -13,5 +13,7 @@ pytorch-lightning
 onnx
 onnxruntime
 datasets
-accelerate>=0.26.0
+accelerate
 transformers[torch]
+wandb
+sentencepiece

@@ -1,0 +1,30 @@
+{
+  "os": "Linux-6.11.0-26-generic-x86_64-with-glibc2.39",
+  "python": "CPython 3.12.3",
+  "startedAt": "2025-06-20T04:01:06.967294Z",
+  "program": "/home/daretechie/DevProject/GitHub/kenya-clinical-challenge/kenya_optimized.py",
+  "codePath": "kenya_optimized.py",
+  "git": {
+    "remote": "git@github.com:daretechie/kenya-clinical-challenge.git",
+    "commit": "8bbf7552909bc79820ca1555a22d7ba04c42bcca"
+  },
+  "root": "/home/daretechie/DevProject/GitHub/kenya-clinical-challenge",
+  "host": "daretechie-pc",
+  "executable": "/home/daretechie/DevProject/Kenya-Challenge/venv/bin/python",
+  "codePathLocal": "kenya_optimized.py",
+  "cpu_count": 4,
+  "cpu_count_logical": 8,
+  "disk": {
+    "/": {
+      "total": "100193824768",
+      "used": "31847231488"
+    }
+  },
+  "memory": {
+    "total": "16483831808"
+  },
+  "cpu": {
+    "count": 4,
+    "countLogical": 8
+  }
+}
