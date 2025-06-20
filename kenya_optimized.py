@@ -16,11 +16,11 @@ from transformers import (
     AutoTokenizer,
     AutoModelForSeq2SeqLM,
     DataCollatorForSeq2Seq,
-    AdamW,
     get_linear_schedule_with_warmup,
     Trainer,
     TrainingArguments,
 )
+from transformers.optimization import AdamW
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from rouge_score import rouge_scorer
 from transformers import set_seed
