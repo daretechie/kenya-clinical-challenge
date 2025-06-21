@@ -29,7 +29,6 @@ import onnx
 import onnxruntime as ort
 from pathlib import Path
 from datetime import datetime
-import gc
 
 # Set up logging
 os.makedirs("logs", exist_ok=True)
@@ -41,14 +40,14 @@ wandb.init(project="kenya-clinical-challenge")
 # Configuration
 CONFIG = {
     "model_name": "google/flan-t5-base",
-    "max_input_length": 286,
-    "max_target_length": 154,
-    "batch_size": 4,
+    "max_input_length": 1024,
+    "max_target_length": 512,
+    "batch_size": 8,
     "learning_rate": 3e-4,
     "num_train_epochs": 10,
     "warmup_steps": 500,
     "weight_decay": 0.01,
-    "gradient_accumulation_steps": 4,
+    "gradient_accumulation_steps": 2,
     "logging_steps": 10,
     "save_steps": 100,
     "eval_steps": 50,
@@ -147,26 +146,6 @@ class PromptTuning(nn.Module):
         """Initialize prefix embeddings with random values"""
         nn.init.xavier_uniform_(self.prefix_encoder.weight)
         
-    def save_pretrained(self, save_directory):
-        """Saves prompt-tuning prefix-encoder."""
-        log_message(f"Saving prompt-tuning prefix encoder to {save_directory}")
-        os.makedirs(save_directory, exist_ok=True)
-        torch.save(self.prefix_encoder.state_dict(), os.path.join(save_directory, "prefix_encoder.pth"))
-        self.base_model.save_pretrained(save_directory)
-
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
-        self.base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
-
-    def gradient_checkpointing_disable(self):
-        self.base_model.gradient_checkpointing_disable()
-
-    def __getattr__(self, name):
-        """Forward missing attributes to the base model."""
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.base_model, name)
-
     def forward(self, input_ids, attention_mask=None, labels=None, num_items_in_batch=None, **kwargs):
         # Get input embeddings
         inputs_embeds = self.base_model.get_input_embeddings()(input_ids)
@@ -362,6 +341,17 @@ def main():
     log_message(f"Loading tokenizer: {CONFIG['model_name']}")
     tokenizer = AutoTokenizer.from_pretrained(CONFIG["model_name"])
     
+    log_message(f"Loading model: {CONFIG['model_name']}")
+    model = AutoModelForSeq2SeqLM.from_pretrained(CONFIG["model_name"])
+    
+    # Add prompt tuning if enabled
+    if CONFIG["use_prompt_tuning"]:
+        log_message("Applying prompt tuning...")
+        model = PromptTuning(model, CONFIG["prefix_length"])
+    
+    # Resize token embeddings (if prompt tuning is applied)
+    model.base_model.resize_token_embeddings(len(tokenizer))
+    
     # Create dataset
     dataset = ClinicalDataset(train_texts, train_labels, tokenizer)
     
@@ -375,14 +365,6 @@ def main():
     # Cross-validation loop
     for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
         log_message(f"Training fold {fold+1}/{CONFIG['n_splits']}")
-        
-        # Safer per-fold model
-        log_message(f"Loading model for fold {fold+1}: {CONFIG['model_name']}")
-        model_fold = AutoModelForSeq2SeqLM.from_pretrained(CONFIG["model_name"])
-        if CONFIG["use_prompt_tuning"]:
-            log_message("Applying prompt tuning...")
-            model_fold = PromptTuning(model_fold, CONFIG["prefix_length"])
-        model_fold.base_model.resize_token_embeddings(len(tokenizer))
         
         # Split dataset
         train_subset = torch.utils.data.Subset(dataset, train_idx)
@@ -410,17 +392,16 @@ def main():
             metric_for_best_model=CONFIG["metric_for_best_model"],
             fp16=CONFIG["use_fp16"],
             report_to="wandb",
-            disable_tqdm=False,
-            gradient_checkpointing=True
+            disable_tqdm=False
         )
         
         # Create trainer
         trainer = Trainer(
-            model=model_fold,
+            model=model,
             args=training_args,
             train_dataset=train_subset,
             eval_dataset=val_subset,
-            data_collator=DataCollatorForSeq2Seq(tokenizer, model=model_fold),
+            data_collator=DataCollatorForSeq2Seq(tokenizer, model=model),
             compute_metrics=lambda pred: compute_metrics(pred, tokenizer),
             tokenizer=tokenizer
         )
@@ -444,18 +425,13 @@ def main():
         
         # Save model checkpoint
         model_path = f"./models/fold_{fold+1}"
-        model_fold.save_pretrained(model_path)
+        os.makedirs(model_path, exist_ok=True)
+        model.save_pretrained(model_path)
         tokenizer.save_pretrained(model_path)
         
         # Export to ONNX
         onnx_path = f"./models/fold_{fold+1}.onnx"
-        export_to_onnx(model_fold, tokenizer, onnx_path)
-
-        # Clean up memory
-        del trainer
-        del model_fold
-        torch.cuda.empty_cache()
-        gc.collect()
+        export_to_onnx(model, tokenizer, onnx_path)
     
     # Ensemble predictions from all folds
     log_message("Generating final ensemble predictions...")
@@ -468,45 +444,14 @@ def main():
     fold_predictions = []
     for fold in range(CONFIG["n_splits"]):
         log_message(f"Generating predictions for fold {fold+1}...")
-        
-        model_path = f"./models/fold_{fold+1}"
-        base_model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
-        
-        if CONFIG["use_prompt_tuning"]:
-            model_fold = PromptTuning(base_model, CONFIG["prefix_length"])
-            prefix_encoder_path = os.path.join(model_path, "prefix_encoder.pth")
-            if os.path.exists(prefix_encoder_path):
-                model_fold.prefix_encoder.load_state_dict(torch.load(prefix_encoder_path))
-        else:
-            model_fold = base_model
-
-        model_fold.base_model.resize_token_embeddings(len(tokenizer))
-        
-        # Use a simplified TrainingArguments for prediction
-        predict_args = TrainingArguments(
-            output_dir=f"./results_pred_fold{fold+1}",
-            per_device_eval_batch_size=CONFIG["batch_size"],
-            fp16=CONFIG["use_fp16"],
-            disable_tqdm=True,
-            report_to="none"
-        )
-
         trainer = Trainer(
-            model=model_fold,
-            args=predict_args,
-            tokenizer=tokenizer
+            model=model,
+            args=TrainingArguments(output_dir="./results"),
         )
         predictions = trainer.predict(test_dataset)
         pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
         fold_predictions.append(pred_texts)
-
-        # Clean up memory
-        del trainer
-        del model_fold
-        del base_model
-        torch.cuda.empty_cache()
-        gc.collect()
-
+        
     # Ensemble predictions by averaging
     for i in range(len(test_texts)):
         # Combine predictions from all folds
@@ -532,20 +477,7 @@ def main():
     # Export final model to ONNX
     log_message("Exporting final model to ONNX format...")
     final_onnx_path = "final_model.onnx"
-    
-    # Load the best model (from fold 1 as an example) for final export
-    log_message("Loading model from fold 1 for final ONNX export...")
-    model_path = "./models/fold_1"
-    base_model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
-    if CONFIG["use_prompt_tuning"]:
-        model_fold = PromptTuning(base_model, CONFIG["prefix_length"])
-        prefix_encoder_path = os.path.join(model_path, "prefix_encoder.pth")
-        if os.path.exists(prefix_encoder_path):
-            model_fold.prefix_encoder.load_state_dict(torch.load(prefix_encoder_path))
-    else:
-        model_fold = base_model
-        
-    export_to_onnx(model_fold, tokenizer, final_onnx_path)
+    export_to_onnx(model, tokenizer, final_onnx_path)
     
     log_message("Training and prediction pipeline completed successfully!")
 
