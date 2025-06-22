@@ -31,6 +31,10 @@ from pathlib import Path
 from datetime import datetime
 import gc
 
+# Force HuggingFace to save checkpoints in PyTorch format instead of safetensors
+import os
+os.environ["HF_SAVE_FORMAT"] = "pt"
+
 # Set up logging
 os.makedirs("logs", exist_ok=True)
 
