@@ -414,8 +414,8 @@ def main():
                 logging_dir=f"./logs/fold_{fold+1}",
                 logging_steps=CONFIG["logging_steps"],
                 save_steps=CONFIG["save_steps"],
-                eval_steps="steps",  # Use steps for evaluation
-                # evaluation_strategy="steps", #commented out to avoid frequent evals
+                eval_steps=CONFIG["eval_steps"],
+                eval_strategy="steps", #commented out to avoid frequent evals
                 save_strategy="steps",
                 save_total_limit=CONFIG["save_total_limit"],
                 load_best_model_at_end=CONFIG["load_best_model_at_end"],
