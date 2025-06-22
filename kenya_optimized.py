@@ -466,8 +466,13 @@ def main():
             if isinstance(preds, np.ndarray):
                 preds = preds.tolist()
             elif isinstance(preds, list):
-                # If still a list of numpy arrays, convert each to list
                 preds = [p.tolist() if isinstance(p, np.ndarray) else p for p in preds]
+            # Robust flatten: ensure each element is a list of ints
+            def flatten_pred(p):
+                while isinstance(p, (list, np.ndarray)) and len(p) == 1:
+                    p = p[0]
+                return p
+            preds = [flatten_pred(p) for p in preds]
             pred_texts = tokenizer.batch_decode(preds, skip_special_tokens=True)
             
             # Store predictions for ensemble
