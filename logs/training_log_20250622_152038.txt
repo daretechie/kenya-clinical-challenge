@@ -1,0 +1,11 @@
+2025-06-22T15:20:38.026720: Starting Kenya Clinical Challenge solution
+2025-06-22T15:20:38.026829: Loading and preprocessing data...
+2025-06-22T15:20:38.145150: Original train shape: (20, 12)
+2025-06-22T15:20:38.145222: Original test shape: (20, 7)
+2025-06-22T15:20:38.155994: Cleaned train shape: (40, 2)
+2025-06-22T15:20:38.158509: Loading tokenizer: google/flan-t5-base
+2025-06-22T15:20:38.785854: Starting 2-fold cross-validation
+2025-06-22T15:20:38.786437: Training fold 1/2
+2025-06-22T15:20:38.786488: Loading model for fold 1: google/flan-t5-base
+2025-06-22T15:20:39.803227: Applying prompt tuning...
+2025-06-22T15:20:41.124756: Starting training...
