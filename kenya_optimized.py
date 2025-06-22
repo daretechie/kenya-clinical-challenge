@@ -459,8 +459,12 @@ def main():
             
             # Generate predictions for this fold
             log_message(f"Generating predictions for fold {fold+1}...")
-            predictions = trainer.predict(val_subset)
-            pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
+            preds = predictions.predictions
+            if isinstance(preds, tuple):
+                preds = preds[0]
+            if isinstance(preds, list):
+                preds = np.array(preds)
+            pred_texts = tokenizer.batch_decode(preds, skip_special_tokens=True)
             
             # Store predictions for ensemble
             all_predictions.append(pred_texts)
