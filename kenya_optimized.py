@@ -414,6 +414,21 @@ def main():
             gradient_checkpointing=True
         )
         
+        # Debug: Print first batch of data and check for empty/all-padding labels
+        train_loader = DataLoader(train_subset, batch_size=CONFIG["batch_size"], shuffle=True)
+        first_batch = next(iter(train_loader))
+        print("\n[DEBUG] First batch input_ids:", first_batch["input_ids"][:2])
+        print("[DEBUG] First batch labels:", first_batch["labels"][:2] if "labels" in first_batch else "No labels")
+        if "labels" in first_batch:
+            num_all_pad = (first_batch["labels"] == 0).all(dim=1).sum().item()
+            print(f"[DEBUG] Number of all-padding label rows in first batch: {num_all_pad}/{first_batch['labels'].shape[0]}")
+            num_empty = (first_batch["labels"] == 0).sum().item()
+            print(f"[DEBUG] Total number of padding tokens in labels: {num_empty}")
+
+        # Debug: Print optimizer learning rate before training
+        optimizer = torch.optim.AdamW(model_fold.parameters(), lr=CONFIG["learning_rate"])
+        print("[DEBUG] Initial optimizer learning rate:", optimizer.param_groups[0]["lr"])
+
         # Create trainer
         trainer = Trainer(
             model=model_fold,
