@@ -461,18 +461,26 @@ def main():
             log_message(f"Generating predictions for fold {fold+1}...")
             predictions = trainer.predict(val_subset)
             preds = predictions.predictions
+
+            # --- DEBUGGING START ---
+            log_message(f"[DEBUG] Type of preds: {type(preds)}")
+            if isinstance(preds, np.ndarray):
+                log_message(f"[DEBUG] Shape of preds: {preds.shape}")
+            elif isinstance(preds, (list, tuple)):
+                log_message(f"[DEBUG] Length of preds: {len(preds)}")
+                if len(preds) > 0:
+                    log_message(f"[DEBUG] Type of first element: {type(preds[0])}")
+                    if isinstance(preds[0], np.ndarray):
+                        log_message(f"[DEBUG] Shape of first element: {preds[0].shape}")
+            # --- DEBUGGING END ---
+
             if isinstance(preds, tuple):
                 preds = preds[0]
-            if isinstance(preds, np.ndarray):
-                preds = preds.tolist()
-            elif isinstance(preds, list):
-                preds = [p.tolist() if isinstance(p, np.ndarray) else p for p in preds]
-            # Robust flatten: ensure each element is a list of ints
-            def flatten_pred(p):
-                while isinstance(p, (list, np.ndarray)) and len(p) == 1:
-                    p = p[0]
-                return p
-            preds = [flatten_pred(p) for p in preds]
+
+            # Squeeze any singleton dimensions to ensure the tensor is 2D
+            if isinstance(preds, np.ndarray) and preds.ndim > 2:
+                preds = np.squeeze(preds)
+
             pred_texts = tokenizer.batch_decode(preds, skip_special_tokens=True)
             
             # Store predictions for ensemble
