@@ -459,6 +459,7 @@ def main():
             
             # Generate predictions for this fold
             log_message(f"Generating predictions for fold {fold+1}...")
+            predictions = trainer.predict(val_subset)
             preds = predictions.predictions
             if isinstance(preds, tuple):
                 preds = preds[0]
