@@ -24,7 +24,6 @@ from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from rouge_score import rouge_scorer
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
-import wandb
 import onnx
 import onnxruntime as ort
 from pathlib import Path
@@ -36,10 +35,6 @@ os.environ["HF_SAVE_FORMAT"] = "pt"
 
 # Set up logging
 os.makedirs("logs", exist_ok=True)
-
-# Initialize W&B for tracking
-os.makedirs("wandb", exist_ok=True)
-wandb.init(project="kenya-clinical-challenge")
 
 # Configuration
 CONFIG = {
@@ -204,29 +199,36 @@ class PromptTuning(nn.Module):
 def compute_metrics(pred, tokenizer):
     """Compute ROUGE metrics for evaluation"""
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-    predictions = tokenizer.batch_decode(pred.predictions, skip_special_tokens=True)
-    references = tokenizer.batch_decode(pred.label_ids, skip_special_tokens=True)
-    
+    # Ensure predictions and labels are numpy arrays
+    preds = pred.predictions
+    labels = pred.label_ids
+    # If predictions are a list of lists, convert to numpy array
+    if isinstance(preds, list):
+        preds = np.array(preds)
+    if isinstance(labels, list):
+        labels = np.array(labels)
+    # If predictions are logits, take argmax
+    if preds.ndim == 3:
+        preds = np.argmax(preds, axis=-1)
+    predictions = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    references = tokenizer.batch_decode(labels, skip_special_tokens=True)
     scores = []
-    for pred, ref in zip(predictions, references):
-        score = scorer.score(pred, ref)
+    for pred_str, ref_str in zip(predictions, references):
+        score = scorer.score(pred_str, ref_str)
         scores.append({
             "rouge1": score["rouge1"].fmeasure,
             "rouge2": score["rouge2"].fmeasure,
             "rougeL": score["rougeL"].fmeasure,
         })
-    
     result = {k: np.mean([s[k] for s in scores]) for k in scores[0]}
     result["rouge-combined"] = result["rouge1"] + result["rouge2"] + result["rougeL"]
-    
-    # Log metrics to W&B
-    wandb.log({
-        "eval/rouge1": result["rouge1"],
-        "eval/rouge2": result["rouge2"],
-        "eval/rougeL": result["rougeL"],
-        "eval/rouge-combined": result["rouge-combined"]
-    })
-    
+    # Log metrics to W&B (commented out)
+    # wandb.log({
+    #     "eval/rouge1": result["rouge1"],
+    #     "eval/rouge2": result["rouge2"],
+    #     "eval/rougeL": result["rougeL"],
+    #     "eval/rouge-combined": result["rouge-combined"]
+    # })
     return result
 
 # Data Augmentation
@@ -413,16 +415,15 @@ def main():
                 logging_steps=CONFIG["logging_steps"],
                 save_steps=CONFIG["save_steps"],
                 eval_steps=CONFIG["eval_steps"],
-                eval_strategy="steps",
                 save_strategy="steps",
                 save_total_limit=CONFIG["save_total_limit"],
                 load_best_model_at_end=CONFIG["load_best_model_at_end"],
                 metric_for_best_model=CONFIG["metric_for_best_model"],
                 fp16=CONFIG["use_fp16"],
-                report_to="wandb",
+                report_to="none",
                 disable_tqdm=False,
                 gradient_checkpointing=True,
-                save_safetensors=False  # <--- Add this line
+                save_safetensors=False
             )
             
             # Debug: Print first batch of data and check for empty/all-padding labels
@@ -516,13 +517,13 @@ def main():
             fp16=CONFIG["use_fp16"],
             disable_tqdm=True,
             report_to="none",
-            save_safetensors=False  # <--- Add this line
+            save_safetensors=False
         )
 
         trainer = Trainer(
             model=model_fold,
             args=predict_args,
-            tokenizer=tokenizer
+            data_collator=DataCollatorForSeq2Seq(tokenizer, model=model_fold)
         )
         predictions = trainer.predict(test_dataset)
         pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
