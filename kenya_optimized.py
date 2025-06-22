@@ -54,7 +54,7 @@ CONFIG = {
     "eval_steps": 50,
     "seed": 42,
     "n_splits": 5,
-    "use_fp16": True,
+    "use_fp16": False,  # Set to False for stability
     "output_dir": "./results",
     "save_total_limit": 2,
     "load_best_model_at_end": True,
@@ -193,7 +193,7 @@ class PromptTuning(nn.Module):
             **kwargs
         )
         
-        return outputs
+        return outputs  # Ensure outputs is a ModelOutput with .loss
 
 # Compute Metrics
 def compute_metrics(pred, tokenizer):
@@ -426,10 +426,6 @@ def main():
             print(f"[DEBUG] Number of all-padding label rows in first batch: {num_all_pad}/{first_batch['labels'].shape[0]}")
             num_empty = (first_batch["labels"] == 0).sum().item()
             print(f"[DEBUG] Total number of padding tokens in labels: {num_empty}")
-
-        # Debug: Print optimizer learning rate before training
-        optimizer = torch.optim.AdamW(model_fold.parameters(), lr=CONFIG["learning_rate"])
-        print("[DEBUG] Initial optimizer learning rate:", optimizer.param_groups[0]["lr"])
 
         # Create trainer
         trainer = Trainer(
