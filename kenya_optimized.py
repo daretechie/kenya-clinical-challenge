@@ -18,7 +18,7 @@ from transformers import (
     DataCollatorForSeq2Seq,
     get_linear_schedule_with_warmup,
     Trainer,
-    TrainingArguments,
+    TrainingArguments,  # Ensure this is imported
 )
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from rouge_score import rouge_scorer
@@ -32,7 +32,6 @@ from datetime import datetime
 import gc
 
 # Force HuggingFace to save checkpoints in PyTorch format instead of safetensors
-import os
 os.environ["HF_SAVE_FORMAT"] = "pt"
 
 # Set up logging
@@ -116,6 +115,8 @@ class ClinicalDataset(Dataset):
         
     def __getitem__(self, idx):
         text = self.texts[idx]
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer must be provided to ClinicalDataset")
         encoding = self.tokenizer(
             text,
             max_length=CONFIG["max_input_length"],
@@ -351,9 +352,10 @@ class ONNXInference:
                 "attention_mask": inputs["attention_mask"].numpy()
             }
         )
-        
-        # Decode output
-        predictions = np.argmax(outputs[0], axis=-1)
+        logits = outputs[0]
+        if not isinstance(logits, np.ndarray):
+            logits = np.array(logits)
+        predictions = np.argmax(logits, axis=-1)
         return self.tokenizer.decode(predictions[0], skip_special_tokens=True)
 
 # Main Function
@@ -377,13 +379,11 @@ def main():
     # K-Fold Cross Validation
     log_message(f"Starting {CONFIG['n_splits']}-fold cross-validation")
     kf = KFold(n_splits=CONFIG["n_splits"], shuffle=True, random_state=CONFIG["seed"])
-    
-    # Store all predictions for ensemble
     all_predictions = []
-    
-    # Cross-validation loop
+    # Use indices for KFold
+    indices = np.arange(len(dataset))
     try:
-        for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+        for fold, (train_idx, val_idx) in enumerate(kf.split(indices)):
             log_message(f"Training fold {fold+1}/{CONFIG['n_splits']}")
             
             # Safer per-fold model
@@ -395,8 +395,8 @@ def main():
             model_fold.base_model.resize_token_embeddings(len(tokenizer))
             
             # Split dataset
-            train_subset = torch.utils.data.Subset(dataset, train_idx)
-            val_subset = torch.utils.data.Subset(dataset, val_idx)
+            train_subset = torch.utils.data.Subset(dataset, train_idx.tolist())
+            val_subset = torch.utils.data.Subset(dataset, val_idx.tolist())
             
             # Create training arguments
             training_args = TrainingArguments(
@@ -421,7 +421,8 @@ def main():
                 fp16=CONFIG["use_fp16"],
                 report_to="wandb",
                 disable_tqdm=False,
-                gradient_checkpointing=True
+                gradient_checkpointing=True,
+                save_safetensors=False  # <--- Add this line
             )
             
             # Debug: Print first batch of data and check for empty/all-padding labels
@@ -442,8 +443,7 @@ def main():
                 train_dataset=train_subset,
                 eval_dataset=val_subset,
                 data_collator=DataCollatorForSeq2Seq(tokenizer, model=model_fold),
-                compute_metrics=lambda pred: compute_metrics(pred, tokenizer),
-                tokenizer=tokenizer
+                compute_metrics=lambda pred: compute_metrics(pred, tokenizer)
             )
             
             # Train model
@@ -515,7 +515,8 @@ def main():
             per_device_eval_batch_size=CONFIG["batch_size"],
             fp16=CONFIG["use_fp16"],
             disable_tqdm=True,
-            report_to="none"
+            report_to="none",
+            save_safetensors=False  # <--- Add this line
         )
 
         trainer = Trainer(
