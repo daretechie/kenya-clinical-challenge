@@ -463,8 +463,11 @@ def main():
             preds = predictions.predictions
             if isinstance(preds, tuple):
                 preds = preds[0]
-            if isinstance(preds, list):
-                preds = np.array(preds)
+            if isinstance(preds, np.ndarray):
+                preds = preds.tolist()
+            elif isinstance(preds, list):
+                # If still a list of numpy arrays, convert each to list
+                preds = [p.tolist() if isinstance(p, np.ndarray) else p for p in preds]
             pred_texts = tokenizer.batch_decode(preds, skip_special_tokens=True)
             
             # Store predictions for ensemble
