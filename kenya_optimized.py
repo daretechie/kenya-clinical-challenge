@@ -213,6 +213,9 @@ def compute_metrics(pred, tokenizer):
     # If predictions are logits, take argmax
     if hasattr(preds, 'ndim') and preds.ndim == 3:
         preds = np.argmax(preds, axis=-1)
+    # Replace -100 in labels with pad_token_id for decoding
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    labels = np.where(labels == -100, pad_token_id, labels)
     predictions = tokenizer.batch_decode(preds, skip_special_tokens=True)
     references = tokenizer.batch_decode(labels, skip_special_tokens=True)
     scores = []
