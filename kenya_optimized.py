@@ -130,8 +130,10 @@ class ClinicalDataset(Dataset):
                 truncation=True,
                 return_tensors="pt"
             )
-            item["labels"] = label_encoding["input_ids"].squeeze(0)
-            
+            labels = label_encoding["input_ids"].squeeze(0)
+            labels[labels == self.tokenizer.pad_token_id] = -100  # Set padding to -100 for loss
+            item["labels"] = labels
+        
         return item
 
 # Prompt Tuning Module
