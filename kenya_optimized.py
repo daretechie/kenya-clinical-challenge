@@ -202,13 +202,16 @@ def compute_metrics(pred, tokenizer):
     # Ensure predictions and labels are numpy arrays
     preds = pred.predictions
     labels = pred.label_ids
+    # If preds is a tuple (e.g., (logits,)), take the first element
+    if isinstance(preds, tuple):
+        preds = preds[0]
     # If predictions are a list of lists, convert to numpy array
     if isinstance(preds, list):
         preds = np.array(preds)
     if isinstance(labels, list):
         labels = np.array(labels)
     # If predictions are logits, take argmax
-    if preds.ndim == 3:
+    if hasattr(preds, 'ndim') and preds.ndim == 3:
         preds = np.argmax(preds, axis=-1)
     predictions = tokenizer.batch_decode(preds, skip_special_tokens=True)
     references = tokenizer.batch_decode(labels, skip_special_tokens=True)
@@ -222,13 +225,6 @@ def compute_metrics(pred, tokenizer):
         })
     result = {k: np.mean([s[k] for s in scores]) for k in scores[0]}
     result["rouge-combined"] = result["rouge1"] + result["rouge2"] + result["rougeL"]
-    # Log metrics to W&B (commented out)
-    # wandb.log({
-    #     "eval/rouge1": result["rouge1"],
-    #     "eval/rouge2": result["rouge2"],
-    #     "eval/rougeL": result["rougeL"],
-    #     "eval/rouge-combined": result["rouge-combined"]
-    # })
     return result
 
 # Data Augmentation
