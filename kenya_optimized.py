@@ -43,9 +43,9 @@ CONFIG = {
     "model_name": "google/flan-t5-base",
     "max_input_length": 286,
     "max_target_length": 154,
-    "batch_size": 4,
+    "batch_size": 2,  # Fast debug
     "learning_rate": 3e-4,
-    "num_train_epochs": 10,
+    "num_train_epochs": 1,  # Fast debug
     "warmup_steps": 500,
     "weight_decay": 0.01,
     "gradient_accumulation_steps": 4,
@@ -53,8 +53,8 @@ CONFIG = {
     "save_steps": 100,
     "eval_steps": 50,
     "seed": 42,
-    "n_splits": 5,
-    "use_fp16": False,  # Set to False for stability
+    "n_splits": 2,  # Fast debug
+    "use_fp16": False,
     "output_dir": "./results",
     "save_total_limit": 2,
     "load_best_model_at_end": True,
@@ -260,6 +260,9 @@ def load_data():
     
     df_train = pd.read_csv(TRAIN_CSV)
     df_test = pd.read_csv(TEST_CSV)
+    # FAST DEBUG: Use only first 20 rows
+    df_train = df_train.iloc[:20].copy()
+    df_test = df_test.iloc[:20].copy()
     
     log_message(f"Original train shape: {df_train.shape}")
     log_message(f"Original test shape: {df_test.shape}")
@@ -375,100 +378,107 @@ def main():
     all_predictions = []
     
     # Cross-validation loop
-    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
-        log_message(f"Training fold {fold+1}/{CONFIG['n_splits']}")
-        
-        # Safer per-fold model
-        log_message(f"Loading model for fold {fold+1}: {CONFIG['model_name']}")
-        model_fold = AutoModelForSeq2SeqLM.from_pretrained(CONFIG["model_name"])
-        if CONFIG["use_prompt_tuning"]:
-            log_message("Applying prompt tuning...")
-            model_fold = PromptTuning(model_fold, CONFIG["prefix_length"])
-        model_fold.base_model.resize_token_embeddings(len(tokenizer))
-        
-        # Split dataset
-        train_subset = torch.utils.data.Subset(dataset, train_idx)
-        val_subset = torch.utils.data.Subset(dataset, val_idx)
-        
-        # Create training arguments
-        training_args = TrainingArguments(
-            output_dir=f"{CONFIG['output_dir']}_fold{fold+1}",
-            overwrite_output_dir=True,
-            num_train_epochs=CONFIG["num_train_epochs"],
-            per_device_train_batch_size=CONFIG["batch_size"],
-            per_device_eval_batch_size=CONFIG["batch_size"],
-            gradient_accumulation_steps=CONFIG["gradient_accumulation_steps"],
-            learning_rate=CONFIG["learning_rate"],
-            warmup_steps=CONFIG["warmup_steps"],
-            weight_decay=CONFIG["weight_decay"],
-            logging_dir=f"./logs/fold_{fold+1}",
-            logging_steps=CONFIG["logging_steps"],
-            save_steps=CONFIG["save_steps"],
-            eval_steps=CONFIG["eval_steps"],
-            eval_strategy="steps",
-            save_strategy="steps",
-            save_total_limit=CONFIG["save_total_limit"],
-            load_best_model_at_end=CONFIG["load_best_model_at_end"],
-            metric_for_best_model=CONFIG["metric_for_best_model"],
-            fp16=CONFIG["use_fp16"],
-            report_to="wandb",
-            disable_tqdm=False,
-            gradient_checkpointing=True
-        )
-        
-        # Debug: Print first batch of data and check for empty/all-padding labels
-        train_loader = DataLoader(train_subset, batch_size=CONFIG["batch_size"], shuffle=True)
-        first_batch = next(iter(train_loader))
-        print("\n[DEBUG] First batch input_ids:", first_batch["input_ids"][:2])
-        print("[DEBUG] First batch labels:", first_batch["labels"][:2] if "labels" in first_batch else "No labels")
-        if "labels" in first_batch:
-            num_all_pad = (first_batch["labels"] == 0).all(dim=1).sum().item()
-            print(f"[DEBUG] Number of all-padding label rows in first batch: {num_all_pad}/{first_batch['labels'].shape[0]}")
-            num_empty = (first_batch["labels"] == 0).sum().item()
-            print(f"[DEBUG] Total number of padding tokens in labels: {num_empty}")
+    try:
+        for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+            log_message(f"Training fold {fold+1}/{CONFIG['n_splits']}")
+            
+            # Safer per-fold model
+            log_message(f"Loading model for fold {fold+1}: {CONFIG['model_name']}")
+            model_fold = AutoModelForSeq2SeqLM.from_pretrained(CONFIG["model_name"])
+            if CONFIG["use_prompt_tuning"]:
+                log_message("Applying prompt tuning...")
+                model_fold = PromptTuning(model_fold, CONFIG["prefix_length"])
+            model_fold.base_model.resize_token_embeddings(len(tokenizer))
+            
+            # Split dataset
+            train_subset = torch.utils.data.Subset(dataset, train_idx)
+            val_subset = torch.utils.data.Subset(dataset, val_idx)
+            
+            # Create training arguments
+            training_args = TrainingArguments(
+                output_dir=f"{CONFIG['output_dir']}_fold{fold+1}",
+                overwrite_output_dir=True,
+                num_train_epochs=CONFIG["num_train_epochs"],
+                per_device_train_batch_size=CONFIG["batch_size"],
+                per_device_eval_batch_size=CONFIG["batch_size"],
+                gradient_accumulation_steps=CONFIG["gradient_accumulation_steps"],
+                learning_rate=CONFIG["learning_rate"],
+                warmup_steps=CONFIG["warmup_steps"],
+                weight_decay=CONFIG["weight_decay"],
+                logging_dir=f"./logs/fold_{fold+1}",
+                logging_steps=CONFIG["logging_steps"],
+                save_steps=CONFIG["save_steps"],
+                eval_steps=CONFIG["eval_steps"],
+                eval_strategy="steps",
+                save_strategy="steps",
+                save_total_limit=CONFIG["save_total_limit"],
+                load_best_model_at_end=CONFIG["load_best_model_at_end"],
+                metric_for_best_model=CONFIG["metric_for_best_model"],
+                fp16=CONFIG["use_fp16"],
+                report_to="wandb",
+                disable_tqdm=False,
+                gradient_checkpointing=True
+            )
+            
+            # Debug: Print first batch of data and check for empty/all-padding labels
+            train_loader = DataLoader(train_subset, batch_size=CONFIG["batch_size"], shuffle=True)
+            first_batch = next(iter(train_loader))
+            print("\n[DEBUG] First batch input_ids:", first_batch["input_ids"][:2])
+            print("[DEBUG] First batch labels:", first_batch["labels"][:2] if "labels" in first_batch else "No labels")
+            if "labels" in first_batch:
+                num_all_pad = (first_batch["labels"] == 0).all(dim=1).sum().item()
+                print(f"[DEBUG] Number of all-padding label rows in first batch: {num_all_pad}/{first_batch['labels'].shape[0]}")
+                num_empty = (first_batch["labels"] == 0).sum().item()
+                print(f"[DEBUG] Total number of padding tokens in labels: {num_empty}")
 
-        # Create trainer
-        trainer = Trainer(
-            model=model_fold,
-            args=training_args,
-            train_dataset=train_subset,
-            eval_dataset=val_subset,
-            data_collator=DataCollatorForSeq2Seq(tokenizer, model=model_fold),
-            compute_metrics=lambda pred: compute_metrics(pred, tokenizer),
-            tokenizer=tokenizer
-        )
-        
-        # Train model
-        log_message("Starting training...")
-        trainer.train()
-        
-        # Evaluate model
-        log_message("Evaluating model...")
-        metrics = trainer.evaluate()
-        log_message(f"Fold {fold+1} Evaluation: {metrics}")
-        
-        # Generate predictions for this fold
-        log_message(f"Generating predictions for fold {fold+1}...")
-        predictions = trainer.predict(val_subset)
-        pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
-        
-        # Store predictions for ensemble
-        all_predictions.append(pred_texts)
-        
-        # Save model checkpoint
-        model_path = f"./models/fold_{fold+1}"
-        model_fold.save_pretrained(model_path)
-        tokenizer.save_pretrained(model_path)
-        
-        # Export to ONNX
-        onnx_path = f"./models/fold_{fold+1}.onnx"
-        export_to_onnx(model_fold, tokenizer, onnx_path)
+            # Create trainer
+            trainer = Trainer(
+                model=model_fold,
+                args=training_args,
+                train_dataset=train_subset,
+                eval_dataset=val_subset,
+                data_collator=DataCollatorForSeq2Seq(tokenizer, model=model_fold),
+                compute_metrics=lambda pred: compute_metrics(pred, tokenizer),
+                tokenizer=tokenizer
+            )
+            
+            # Train model
+            log_message("Starting training...")
+            trainer.train()
+            log_message("Training complete for this fold.")
+            
+            # Evaluate model
+            log_message("Evaluating model...")
+            metrics = trainer.evaluate()
+            log_message(f"Fold {fold+1} Evaluation: {metrics}")
+            
+            # Generate predictions for this fold
+            log_message(f"Generating predictions for fold {fold+1}...")
+            predictions = trainer.predict(val_subset)
+            pred_texts = tokenizer.batch_decode(predictions.predictions, skip_special_tokens=True)
+            
+            # Store predictions for ensemble
+            all_predictions.append(pred_texts)
+            
+            # Save model checkpoint
+            model_path = f"./models/fold_{fold+1}"
+            model_fold.save_pretrained(model_path)
+            tokenizer.save_pretrained(model_path)
+            
+            # Export to ONNX
+            onnx_path = f"./models/fold_{fold+1}.onnx"
+            export_to_onnx(model_fold, tokenizer, onnx_path)
 
-        # Clean up memory
-        del trainer
-        del model_fold
-        torch.cuda.empty_cache()
-        gc.collect()
+            # Clean up memory
+            del trainer
+            del model_fold
+            torch.cuda.empty_cache()
+            gc.collect()
+            log_message(f"Fold {fold+1} finished successfully.")
+    except Exception as e:
+        import traceback
+        log_message(f"Exception occurred during cross-validation: {e}\n{traceback.format_exc()}")
+        raise
     
     # Ensemble predictions from all folds
     log_message("Generating final ensemble predictions...")
